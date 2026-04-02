@@ -111,7 +111,7 @@ function applyCursorGpt54Profile(
           ? (requestBody.reasoning as JsonMap)
           : {}),
         effort: "xhigh",
-        summary: "auto",
+        summary: "none",
       },
     },
     detected: true,

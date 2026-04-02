@@ -223,7 +223,7 @@ describe("codex-auth-openai-proxy", () => {
       expect(body.model).toBe("gpt-5.4");
       expect(body.reasoning).toEqual({
         effort: "xhigh",
-        summary: "auto",
+        summary: "none",
       });
       expect(body.service_tier).toBe("priority");
       res.writeHead(200, { "content-type": "text/event-stream" });
