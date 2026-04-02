@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { AppConfig } from "./config.js";
@@ -92,6 +92,43 @@ async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> 
   await rename(tmpPath, filePath);
 }
 
+async function trimJsonlFileTail(filePath: string, maxBytes: number): Promise<void> {
+  if (maxBytes <= 0) {
+    return;
+  }
+
+  let fileStat;
+  try {
+    fileStat = await stat(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  if (fileStat.size <= maxBytes) {
+    return;
+  }
+
+  const raw = await readFile(filePath);
+  if (raw.length <= maxBytes) {
+    return;
+  }
+
+  let trimmed = raw.subarray(raw.length - maxBytes);
+  const firstNewline = trimmed.indexOf(0x0a);
+  if (firstNewline >= 0 && firstNewline + 1 < trimmed.length) {
+    trimmed = trimmed.subarray(firstNewline + 1);
+  }
+
+  if (trimmed.length === 0) {
+    return;
+  }
+
+  await writeFile(filePath, trimmed);
+}
+
 export class ProxyLogger {
   #enabled: boolean;
 
@@ -126,6 +163,9 @@ export class ProxyLogger {
       log_file_path: this.config.proxyLogFilePath,
       state_file_path: this.config.proxyLogStatePath,
       read_limit_max: this.config.proxyLogReadLimitMax,
+      log_file_max_bytes: this.config.proxyLogFileMaxBytes,
+      detail_level:
+        "full JSON request/response bodies, upstream payloads, SSE events, and errors are logged with secret headers redacted",
     };
   }
 
@@ -158,6 +198,7 @@ export class ProxyLogger {
       `${JSON.stringify(sanitizeForLog(fullEntry))}\n`,
       "utf8",
     );
+    await trimJsonlFileTail(this.config.proxyLogFilePath, this.config.proxyLogFileMaxBytes);
   }
 
   async list(limit: number): Promise<ProxyLogEntry[]> {

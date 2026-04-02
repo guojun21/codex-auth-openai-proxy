@@ -126,6 +126,7 @@ function makeConfig(
     proxyApiKey?: string;
     proxyLoggingEnabledDefault?: boolean;
     logReadLimitMax?: number;
+    logFileMaxBytes?: number;
     alias?: string;
   },
 ): AppConfig {
@@ -144,6 +145,7 @@ function makeConfig(
     proxyLogFilePath: path.join(rootDir, "request-debug.jsonl"),
     proxyLogStatePath: path.join(rootDir, "logging-state.json"),
     proxyLogReadLimitMax: options?.logReadLimitMax ?? 50,
+    proxyLogFileMaxBytes: options?.logFileMaxBytes ?? 10 * 1024 * 1024,
     gpt54FastXhighAlias: {
       alias: options?.alias ?? "codex-gpt-5-4-fast-xhigh",
       upstreamModel: "gpt-5.4",
@@ -223,7 +225,7 @@ describe("codex-auth-openai-proxy", () => {
       expect(body.model).toBe("gpt-5.4");
       expect(body.reasoning).toEqual({
         effort: "xhigh",
-        summary: "none",
+        summary: "auto",
       });
       expect(body.service_tier).toBe("priority");
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -645,7 +647,7 @@ describe("codex-auth-openai-proxy", () => {
       expect(body.model).toBe("gpt-5.4");
       expect(body.reasoning).toEqual({
         effort: "xhigh",
-        summary: "auto",
+        summary: "none",
       });
       expect(body.service_tier).toBe("priority");
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -886,6 +888,7 @@ describe("codex-auth-openai-proxy", () => {
       expect(initialStatus.statusCode).toBe(200);
       expect(initialStatus.json()).toMatchObject({
         enabled: false,
+        log_file_max_bytes: 10 * 1024 * 1024,
       });
 
       const enableResponse = await app.inject({
@@ -1009,6 +1012,94 @@ describe("codex-auth-openai-proxy", () => {
       });
       expect(logsAfterDisable.statusCode).toBe(200);
       expect((logsAfterDisable.json() as { entries: unknown[] }).entries).toHaveLength(2);
+
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("trims old log entries when the log file grows beyond the configured max size", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const proxyApiKey = "proxy-secret";
+    const upstream = await startMockServer((request, res) => {
+      if (request.path !== "/backend-api/codex/responses") {
+        res.writeHead(404).end();
+        return;
+      }
+
+      const body = JSON.parse(request.bodyText) as Record<string, unknown>;
+      const input = Array.isArray(body.input) ? body.input : [];
+      const text =
+        (((input[0] as Record<string, unknown> | undefined)?.content as Array<Record<string, unknown>> | undefined)?.[0]
+          ?.text as string | undefined) ?? "UNKNOWN";
+
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.output_text.done",
+            text,
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: `resp_${text}`,
+              created_at: 1,
+              model: "gpt-5.4",
+              usage: {
+                input_tokens: 3,
+                output_tokens: 1,
+                total_tokens: 4,
+              },
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const config = makeConfig(authPath, upstream.baseUrl, {
+        proxyApiKey,
+        proxyLoggingEnabledDefault: true,
+        logFileMaxBytes: 4_000,
+      });
+      const app = await buildServer(config);
+      const authHeader = { authorization: `Bearer ${proxyApiKey}` };
+
+      for (let index = 0; index < 8; index += 1) {
+        const response = await app.inject({
+          method: "POST",
+          url: "/v1/chat/completions",
+          headers: authHeader,
+          payload: {
+            model: "gpt-5.4",
+            messages: [{ role: "user", content: `trim-${index}-${"x".repeat(220)}` }],
+          },
+        });
+        expect(response.statusCode).toBe(200);
+      }
+
+      const rawLog = await readFile(config.proxyLogFilePath, "utf8");
+      expect(Buffer.byteLength(rawLog, "utf8")).toBeLessThanOrEqual(config.proxyLogFileMaxBytes);
+      expect(rawLog).toContain("trim-7-");
+      expect(rawLog).not.toContain("trim-0-");
+
+      const logsResponse = await app.inject({
+        method: "GET",
+        url: "/admin/logs?limit=20",
+        headers: authHeader,
+      });
+      expect(logsResponse.statusCode).toBe(200);
+      const logsPayload = logsResponse.json() as {
+        entries: Array<{ request?: { body?: { messages?: Array<{ content?: string }> } } }>;
+      };
+      expect(logsPayload.entries.length).toBeGreaterThan(0);
+      expect(
+        JSON.stringify(logsPayload.entries[logsPayload.entries.length - 1] ?? {}),
+      ).toContain("trim-7-");
 
       await app.close();
     } finally {

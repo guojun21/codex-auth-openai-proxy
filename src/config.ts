@@ -19,6 +19,7 @@ export interface AppConfig {
   proxyLogFilePath: string;
   proxyLogStatePath: string;
   proxyLogReadLimitMax: number;
+  proxyLogFileMaxBytes: number;
   gpt54FastXhighAlias: {
     alias: string;
     upstreamModel: string;
@@ -111,6 +112,7 @@ export async function resolveConfig(): Promise<AppConfig> {
         path.join(defaultArtifactsDir, "logging-state.json"),
     ),
     proxyLogReadLimitMax: envNumber("PROXY_LOG_READ_LIMIT_MAX", 200),
+    proxyLogFileMaxBytes: envNumber("PROXY_LOG_FILE_MAX_BYTES", 10 * 1024 * 1024),
     gpt54FastXhighAlias: {
       alias:
         process.env.CODEX_ALIAS_GPT54_FAST_XHIGH ??

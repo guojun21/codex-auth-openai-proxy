@@ -43,7 +43,7 @@ Default server:
   - upstream model: `gpt-5.4`
   - enforced defaults: `service_tier=priority`, `reasoning.effort=xhigh`, `reasoning.summary=auto`
 - Cursor compatibility:
-  - if the request looks like Cursor and the model name is plain `gpt-5.4`, the proxy force-applies `service_tier=priority` and `reasoning={effort:xhigh,summary:auto}`
+  - if the request looks like Cursor and the model name is plain `gpt-5.4`, the proxy force-applies `service_tier=priority` and `reasoning={effort:xhigh,summary:none}`
   - this avoids Cursor rejecting the custom alias before the request is sent
 
 Example:
@@ -82,6 +82,13 @@ curl "http://127.0.0.1:8787/admin/logs?limit=20" \
 
 When logging is disabled, request traffic is not appended to disk. Only the enable transition is force-written so detailed logging can start immediately after you turn it on.
 
+Logging detail and retention:
+
+- request logs are detailed JSONL entries, not summary logs
+- they include full JSON request bodies, full JSON response bodies, upstream request bodies, upstream SSE events when captured, and serialized errors
+- secret-bearing headers such as `Authorization`, cookies, account IDs, and API keys are redacted
+- when the log file grows beyond `10 MB`, the proxy automatically removes the oldest content and keeps only the newest `10 MB`
+
 ## Environment Variables
 
 - `PORT`: default `8787`
@@ -98,3 +105,4 @@ When logging is disabled, request traffic is not appended to disk. Only the enab
 - `PROXY_LOG_FILE_PATH`: default `./var/request-debug.jsonl`
 - `PROXY_LOG_STATE_PATH`: default `./var/logging-state.json`
 - `PROXY_LOG_READ_LIMIT_MAX`: default `200`
+- `PROXY_LOG_FILE_MAX_BYTES`: default `10485760` (`10 MB`)
