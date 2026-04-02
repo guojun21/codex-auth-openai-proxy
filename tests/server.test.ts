@@ -482,6 +482,95 @@ describe("codex-auth-openai-proxy", () => {
     }
   });
 
+  it("accepts Cursor-style input arrays on /v1/chat/completions", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      const body = JSON.parse(request.bodyText) as Record<string, unknown>;
+      expect(String(body.instructions)).toContain("[system]");
+      expect(String(body.instructions)).toContain("be terse");
+      expect(body.input).toEqual([
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+        },
+      ]);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.output_text.done",
+            text: "CURSOR_INPUT_OK",
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_cursor_input_1",
+              created_at: 456,
+              model: "gpt-5.4",
+              usage: {
+                input_tokens: 6,
+                output_tokens: 2,
+                total_tokens: 8,
+              },
+              output: [
+                {
+                  id: "msg_cursor_input_1",
+                  type: "message",
+                  role: "assistant",
+                  status: "completed",
+                  content: [{ type: "output_text", text: "CURSOR_INPUT_OK" }],
+                },
+              ],
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        payload: {
+          model: "gpt-5.4",
+          input: [
+            { role: "system", content: "be terse" },
+            { role: "user", content: "hello" },
+          ],
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        id: "resp_cursor_input_1",
+        object: "chat.completion",
+        created: 456,
+        model: "gpt-5.4",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "CURSOR_INPUT_OK",
+            },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 6,
+          completion_tokens: 2,
+          total_tokens: 8,
+        },
+      });
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it("accepts shorthand reasoning and verbosity fields for /v1/responses", async () => {
     const tempDir = await makeTempDir();
     cleanupPaths.push(tempDir);

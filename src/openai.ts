@@ -211,34 +211,32 @@ function extractInstructionTexts(messages: JsonMap[]): string {
   return blocks.join("\n\n");
 }
 
-export function buildUpstreamResponsesRequest(
-  body: JsonMap,
-  config: AppConfig,
-): {
-  upstreamBody: JsonMap;
-  publicModel: string;
-  aliasApplied: boolean;
-} {
-  const selection = resolveRequestedModel(body.model, config);
-  const explicitInput = body.input;
-  let normalizedInput: unknown = explicitInput;
-
+function normalizeExplicitInput(explicitInput: unknown): unknown[] {
   if (typeof explicitInput === "string") {
-    normalizedInput = [
+    return [
       {
         type: "message",
         role: "user",
         content: [{ type: "input_text", text: explicitInput }],
       },
     ];
-  } else if (explicitInput && typeof explicitInput === "object" && !Array.isArray(explicitInput)) {
+  }
+
+  if (explicitInput && typeof explicitInput === "object" && !Array.isArray(explicitInput)) {
     const role = ensureText((explicitInput as JsonMap).role);
-    if (role) {
-      const message = buildInputMessage(role, (explicitInput as JsonMap).content);
-      normalizedInput = message ? [message] : [];
+    if (!role) {
+      return [];
     }
-  } else if (Array.isArray(explicitInput)) {
-    normalizedInput = explicitInput.map((item) => {
+    const message = buildInputMessage(role, (explicitInput as JsonMap).content);
+    return message ? [message] : [];
+  }
+
+  if (!Array.isArray(explicitInput)) {
+    return [];
+  }
+
+  return explicitInput
+    .map((item) => {
       if (!item || typeof item !== "object") {
         return item;
       }
@@ -252,7 +250,34 @@ export function buildUpstreamResponsesRequest(
         return buildInputMessage(role, record.content) ?? record;
       }
       return record;
-    });
+    })
+    .filter((item) => item !== null);
+}
+
+function extractMessageRecords(items: unknown[]): JsonMap[] {
+  return items.filter((item): item is JsonMap => {
+    if (!item || typeof item !== "object") {
+      return false;
+    }
+    const record = item as JsonMap;
+    return record.type === "message" && typeof record.role === "string";
+  });
+}
+
+export function buildUpstreamResponsesRequest(
+  body: JsonMap,
+  config: AppConfig,
+): {
+  upstreamBody: JsonMap;
+  publicModel: string;
+  aliasApplied: boolean;
+} {
+  const selection = resolveRequestedModel(body.model, config);
+  const explicitInput = body.input;
+  let normalizedInput: unknown = explicitInput;
+
+  if (explicitInput !== undefined) {
+    normalizedInput = normalizeExplicitInput(explicitInput);
   } else if (Array.isArray(body.messages)) {
     normalizedInput = (body.messages as unknown[])
       .map((message) =>
@@ -303,32 +328,51 @@ export function buildUpstreamChatRequest(
       ) as JsonMap[])
     : [];
 
-  const input = messages
-    .filter((message) => {
-      const role = ensureText(message.role);
-      return role === "user" || role === "assistant";
-    })
-    .map((message) =>
-      buildInputMessage(ensureText(message.role) ?? "user", message.content),
-    )
-    .filter(Boolean);
+  const normalizedExplicitInput =
+    body.input !== undefined ? normalizeExplicitInput(body.input) : [];
+  const normalizedExplicitMessages = extractMessageRecords(normalizedExplicitInput);
+
+  const instructionSource =
+    normalizedExplicitMessages.length > 0 ? normalizedExplicitMessages : messages;
+  const input =
+    normalizedExplicitMessages.length > 0
+      ? normalizedExplicitMessages
+          .filter((message) => {
+            const role = ensureText(message.role);
+            return role === "user" || role === "assistant";
+          })
+      : messages
+          .filter((message) => {
+            const role = ensureText(message.role);
+            return role === "user" || role === "assistant";
+          })
+          .map((message) =>
+            buildInputMessage(ensureText(message.role) ?? "user", message.content),
+          )
+          .filter(Boolean);
+
+  const explicitInstructions = ensureText(body.instructions);
+  const extractedInstructions = extractInstructionTexts(instructionSource);
+  const instructions = [explicitInstructions, extractedInstructions]
+    .filter((value): value is string => Boolean(value))
+    .join("\n\n");
 
   return {
     publicModel: selection.publicModel,
     aliasApplied: selection.aliasApplied,
     upstreamBody: {
       model: selection.upstreamModel,
-    instructions: extractInstructionTexts(messages),
-    input,
-    tools: Array.isArray(body.tools) ? body.tools : [],
-    tool_choice: body.tool_choice ?? "auto",
-    parallel_tool_calls: Boolean(body.parallel_tool_calls),
-    store: false,
-    stream: true,
-    include: Array.isArray(body.include) ? body.include : [],
+      instructions,
+      input,
+      tools: Array.isArray(body.tools) ? body.tools : [],
+      tool_choice: body.tool_choice ?? "auto",
+      parallel_tool_calls: Boolean(body.parallel_tool_calls),
+      store: false,
+      stream: true,
+      include: Array.isArray(body.include) ? body.include : [],
       reasoning: mergeReasoning(selection.defaultReasoning, normalizeReasoning(body)),
       service_tier: normalizeServiceTier(body) ?? selection.defaultServiceTier,
-    text: normalizeText(body),
+      text: normalizeText(body),
     },
   };
 }
@@ -400,6 +444,29 @@ export function parseUpstreamResponsePayload(events: Array<JsonMap | null>): Par
           textFromDone = outputText;
         }
       }
+    }
+  }
+
+  if (!textFromDone && latestResponse && Array.isArray(latestResponse.output)) {
+    const completedOutputText = latestResponse.output
+      .filter((item) => item && typeof item === "object")
+      .flatMap((item) => {
+        const record = item as JsonMap;
+        if (ensureText(record.type) !== "message" || !Array.isArray(record.content)) {
+          return [];
+        }
+        return record.content
+          .filter((part) => part && typeof part === "object")
+          .map((part) =>
+            ensureText((part as JsonMap).type) === "output_text"
+              ? ensureText((part as JsonMap).text)
+              : null,
+          )
+          .filter((value): value is string => Boolean(value));
+      })
+      .join("");
+    if (completedOutputText) {
+      textFromDone = completedOutputText;
     }
   }
 
