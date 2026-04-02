@@ -309,7 +309,6 @@ describe("codex-auth-openai-proxy", () => {
       expect(body.model).toBe("gpt-5.4");
       expect(body.reasoning).toEqual({
         effort: "medium",
-        summary: "none",
       });
       expect(body.service_tier).toBe("priority");
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -382,7 +381,6 @@ describe("codex-auth-openai-proxy", () => {
       expect(body.model).toBe("gpt-5.4");
       expect(body.reasoning).toEqual({
         effort: "xhigh",
-        summary: "none",
       });
       expect(body.service_tier).toBe("priority");
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -920,7 +918,6 @@ describe("codex-auth-openai-proxy", () => {
       expect(body.model).toBe("gpt-5.4");
       expect(body.reasoning).toEqual({
         effort: "xhigh",
-        summary: "none",
       });
       expect(body.service_tier).toBe("priority");
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -1390,7 +1387,6 @@ describe("codex-auth-openai-proxy", () => {
           model: "gpt-5.4",
           reasoning: {
             effort: "xhigh",
-            summary: "none",
           },
           service_tier: "priority",
         },

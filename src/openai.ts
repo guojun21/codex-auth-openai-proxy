@@ -57,10 +57,14 @@ function mergeReasoning(
   if (!defaults && !reasoning) {
     return undefined;
   }
-  return {
+  const merged = {
     ...(defaults ?? {}),
     ...(reasoning ?? {}),
   };
+  if (ensureText(merged.summary) === "none") {
+    delete merged.summary;
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
 interface ResolvedModelSelection {
