@@ -41,6 +41,84 @@ function requestPath(url: string): string {
   }
 }
 
+function headerText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.join(" ");
+  }
+  return "";
+}
+
+function detectCursorRequest(
+  requestHeaders: Record<string, unknown>,
+): {
+  isCursor: boolean;
+  matchedBy: string[];
+} {
+  const checks: Array<[string, string]> = [
+    ["user-agent", headerText(requestHeaders["user-agent"])],
+    ["x-client-info", headerText(requestHeaders["x-client-info"])],
+    ["x-requested-with", headerText(requestHeaders["x-requested-with"])],
+    ["origin", headerText(requestHeaders.origin)],
+    ["referer", headerText(requestHeaders.referer)],
+    ["sec-ch-ua", headerText(requestHeaders["sec-ch-ua"])],
+  ];
+
+  const matchedBy = checks
+    .filter(([, value]) => value.toLowerCase().includes("cursor"))
+    .map(([name]) => name);
+
+  return {
+    isCursor: matchedBy.length > 0,
+    matchedBy,
+  };
+}
+
+function applyCursorGpt54Profile(
+  requestBody: JsonMap,
+  requestHeaders: Record<string, unknown>,
+): {
+  body: JsonMap;
+  detected: boolean;
+  applied: boolean;
+  matchedBy: string[];
+} {
+  const detection = detectCursorRequest(requestHeaders);
+  const requestedModel =
+    typeof requestBody.model === "string" && requestBody.model.length > 0
+      ? requestBody.model
+      : null;
+
+  if (!detection.isCursor || requestedModel !== "gpt-5.4") {
+    return {
+      body: requestBody,
+      detected: detection.isCursor,
+      applied: false,
+      matchedBy: detection.matchedBy,
+    };
+  }
+
+  return {
+    body: {
+      ...requestBody,
+      service_tier: "priority",
+      reasoning: {
+        ...(requestBody.reasoning &&
+        typeof requestBody.reasoning === "object"
+          ? (requestBody.reasoning as JsonMap)
+          : {}),
+        effort: "xhigh",
+        summary: "auto",
+      },
+    },
+    detected: true,
+    applied: true,
+    matchedBy: detection.matchedBy,
+  };
+}
+
 function statusCodeFromError(error: unknown): number {
   return typeof (error as { statusCode?: unknown }).statusCode === "number"
     ? (error as { statusCode: number }).statusCode
@@ -346,11 +424,21 @@ export async function buildServer(config: AppConfig) {
 
   app.post("/v1/responses", async (request, reply) => {
     const startedAt = Date.now();
-    const requestBody = (request.body ?? {}) as JsonMap;
+    const rawRequestBody = (request.body ?? {}) as JsonMap;
+    const cursorProfile = applyCursorGpt54Profile(
+      rawRequestBody,
+      request.headers as Record<string, unknown>,
+    );
+    const requestBody = cursorProfile.body;
     const routePath = requestPath(request.url);
     const requestDetails = {
       headers: sanitizeHeaders(request.headers as Record<string, unknown>),
       body: sanitizeForLog(requestBody),
+      cursor_profile: {
+        detected: cursorProfile.detected,
+        applied: cursorProfile.applied,
+        matched_by: cursorProfile.matchedBy,
+      },
     };
 
     try {
@@ -365,6 +453,8 @@ export async function buildServer(config: AppConfig) {
         request_body: upstreamRequest.upstreamBody,
         alias_applied: upstreamRequest.aliasApplied,
         public_model: upstreamRequest.publicModel,
+        cursor_profile_applied: cursorProfile.applied,
+        cursor_profile_matched_by: cursorProfile.matchedBy,
         status: upstream.status,
       };
 
@@ -507,11 +597,21 @@ export async function buildServer(config: AppConfig) {
 
   app.post("/v1/chat/completions", async (request, reply) => {
     const startedAt = Date.now();
-    const requestBody = (request.body ?? {}) as JsonMap;
+    const rawRequestBody = (request.body ?? {}) as JsonMap;
+    const cursorProfile = applyCursorGpt54Profile(
+      rawRequestBody,
+      request.headers as Record<string, unknown>,
+    );
+    const requestBody = cursorProfile.body;
     const routePath = requestPath(request.url);
     const requestDetails = {
       headers: sanitizeHeaders(request.headers as Record<string, unknown>),
       body: sanitizeForLog(requestBody),
+      cursor_profile: {
+        detected: cursorProfile.detected,
+        applied: cursorProfile.applied,
+        matched_by: cursorProfile.matchedBy,
+      },
     };
 
     try {
@@ -526,6 +626,8 @@ export async function buildServer(config: AppConfig) {
         request_body: upstreamRequest.upstreamBody,
         alias_applied: upstreamRequest.aliasApplied,
         public_model: upstreamRequest.publicModel,
+        cursor_profile_applied: cursorProfile.applied,
+        cursor_profile_matched_by: cursorProfile.matchedBy,
         status: upstream.status,
       };
 

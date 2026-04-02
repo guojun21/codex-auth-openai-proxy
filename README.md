@@ -42,6 +42,9 @@ Default server:
 - alias model: `codex-gpt-5-4-fast-xhigh`
   - upstream model: `gpt-5.4`
   - enforced defaults: `service_tier=priority`, `reasoning.effort=xhigh`, `reasoning.summary=auto`
+- Cursor compatibility:
+  - if the request looks like Cursor and the model name is plain `gpt-5.4`, the proxy force-applies `service_tier=priority` and `reasoning={effort:xhigh,summary:auto}`
+  - this avoids Cursor rejecting the custom alias before the request is sent
 
 Example:
 

@@ -546,6 +546,77 @@ describe("codex-auth-openai-proxy", () => {
     }
   });
 
+  it("forces Cursor gpt-5.4 requests onto priority + xhigh without changing the public model name", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      expect(request.path).toBe("/backend-api/codex/responses");
+      const body = JSON.parse(request.bodyText) as Record<string, unknown>;
+      expect(body.model).toBe("gpt-5.4");
+      expect(body.reasoning).toEqual({
+        effort: "xhigh",
+        summary: "auto",
+      });
+      expect(body.service_tier).toBe("priority");
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.created",
+            response: {
+              id: "resp_cursor_1",
+              created_at: 42,
+              model: "gpt-5.4",
+            },
+          },
+          {
+            type: "response.output_text.done",
+            text: "CURSOR_FORCE_OK",
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_cursor_1",
+              created_at: 42,
+              model: "gpt-5.4",
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        headers: {
+          "user-agent": "Cursor/2.6.22",
+        },
+        payload: {
+          model: "gpt-5.4",
+          messages: [{ role: "user", content: "hello" }],
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        id: "resp_cursor_1",
+        model: "gpt-5.4",
+        choices: [
+          {
+            message: {
+              content: "CURSOR_FORCE_OK",
+            },
+          },
+        ],
+      });
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it("streams OpenAI chat completion chunks derived from upstream response deltas", async () => {
     const tempDir = await makeTempDir();
     cleanupPaths.push(tempDir);
