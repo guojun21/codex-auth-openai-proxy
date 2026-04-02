@@ -717,6 +717,16 @@ export async function buildServer(config: AppConfig) {
       let created = Math.floor(Date.now() / 1000);
       let toolIndex = 0;
       let finishReason: "stop" | "tool_calls" = "stop";
+      const streamedToolCalls = new Map<
+        string,
+        {
+          index: number;
+          callId: string;
+          name: string;
+          announced: boolean;
+          sawArgumentDelta: boolean;
+        }
+      >();
       const includeUsage =
         Boolean(requestBody.stream_options) &&
         typeof requestBody.stream_options === "object" &&
@@ -738,6 +748,64 @@ export async function buildServer(config: AppConfig) {
             ],
           }),
         );
+      };
+
+      const ensureToolCallMeta = (
+        itemId: string,
+        fallback?: {
+          callId?: string;
+          name?: string;
+        },
+      ) => {
+        let meta = streamedToolCalls.get(itemId);
+        if (!meta) {
+          meta = {
+            index: toolIndex++,
+            callId: fallback?.callId ?? `call_${toolIndex}`,
+            name: fallback?.name ?? "function",
+            announced: false,
+            sawArgumentDelta: false,
+          };
+          streamedToolCalls.set(itemId, meta);
+        } else {
+          if (fallback?.callId) {
+            meta.callId = fallback.callId;
+          }
+          if (fallback?.name) {
+            meta.name = fallback.name;
+          }
+        }
+        return meta;
+      };
+
+      const announceToolCall = (meta: {
+        index: number;
+        callId: string;
+        name: string;
+        announced: boolean;
+      }) => {
+        if (!sentRole) {
+          writeChunk({ role: "assistant" });
+          sentRole = true;
+        }
+        if (meta.announced) {
+          return;
+        }
+        finishReason = "tool_calls";
+        writeChunk({
+          tool_calls: [
+            {
+              index: meta.index,
+              id: meta.callId,
+              type: "function",
+              function: {
+                name: meta.name,
+                arguments: "",
+              },
+            },
+          ],
+        });
+        meta.announced = true;
       };
 
       for await (const frame of iterateSseFrames(upstream.body)) {
@@ -772,31 +840,63 @@ export async function buildServer(config: AppConfig) {
           continue;
         }
 
+        if (type === "response.output_item.added" && event.item && typeof event.item === "object") {
+          const item = event.item as JsonMap;
+          if (item.type === "function_call") {
+            const itemId = String(item.id ?? `tool_${toolIndex}`);
+            const meta = ensureToolCallMeta(itemId, {
+              callId: String(item.call_id ?? `call_${toolIndex}`),
+              name: String(item.name ?? "function"),
+            });
+            announceToolCall(meta);
+          }
+          continue;
+        }
+
+        if (type === "response.function_call_arguments.delta") {
+          const itemId = String(event.item_id ?? `tool_${toolIndex}`);
+          const meta = ensureToolCallMeta(itemId);
+          announceToolCall(meta);
+          meta.sawArgumentDelta = true;
+          writeChunk({
+            tool_calls: [
+              {
+                index: meta.index,
+                function: {
+                  arguments: String(event.delta ?? ""),
+                },
+              },
+            ],
+          });
+          continue;
+        }
+
         if (type === "response.output_item.done" && event.item && typeof event.item === "object") {
           const item = event.item as JsonMap;
           if (item.type === "function_call") {
-            if (!sentRole) {
-              writeChunk({ role: "assistant" });
-              sentRole = true;
+            const itemId = String(item.id ?? `tool_${toolIndex}`);
+            const meta = ensureToolCallMeta(itemId, {
+              callId: String(item.call_id ?? `call_${toolIndex}`),
+              name: String(item.name ?? "function"),
+            });
+            const fullArguments =
+              typeof item.arguments === "string"
+                ? item.arguments
+                : JSON.stringify(item.arguments ?? {});
+            announceToolCall(meta);
+            if (!meta.sawArgumentDelta && fullArguments) {
+              writeChunk({
+                tool_calls: [
+                  {
+                    index: meta.index,
+                    function: {
+                      arguments: fullArguments,
+                    },
+                  },
+                ],
+              });
             }
             finishReason = "tool_calls";
-            writeChunk({
-              tool_calls: [
-                {
-                  index: toolIndex,
-                  id: String(item.call_id ?? `call_${toolIndex}`),
-                  type: "function",
-                  function: {
-                    name: String(item.name ?? "function"),
-                    arguments:
-                      typeof item.arguments === "string"
-                        ? item.arguments
-                        : JSON.stringify(item.arguments ?? {}),
-                  },
-                },
-              ],
-            });
-            toolIndex += 1;
           }
           continue;
         }

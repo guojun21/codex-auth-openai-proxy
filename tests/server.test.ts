@@ -118,6 +118,14 @@ function sse(...events: unknown[]): string {
     .join("");
 }
 
+function parseSsePayload(payload: string): Array<Record<string, unknown>> {
+  return payload
+    .split("\n\n")
+    .map((block) => block.trim())
+    .filter((block) => block.length > 0 && block !== "data: [DONE]")
+    .map((block) => JSON.parse(block.replace(/^data:\s*/, "")) as Record<string, unknown>);
+}
+
 function makeConfig(
   authJsonPath: string,
   baseUrl: string,
@@ -941,6 +949,160 @@ describe("codex-auth-openai-proxy", () => {
       expect(body).toContain('"choices":[]');
       expect(body).toContain('"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}');
       expect(body).toContain("data: [DONE]");
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("streams function tool calls incrementally for chat completions", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const fullArguments = JSON.stringify({
+      name: "startup-module-resolution-rollout",
+      overview: "plan overview",
+      plan: "# Startup Module Resolution Rollout",
+      todos: [{ id: "phase-1", content: "do work" }],
+    });
+    const firstDelta = fullArguments.slice(0, 12);
+    const secondDelta = fullArguments.slice(12, 38);
+    const thirdDelta = fullArguments.slice(38);
+    const upstream = await startMockServer((request, res) => {
+      expect(request.path).toBe("/backend-api/codex/responses");
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.created",
+            response: {
+              id: "resp_stream_tool_1",
+              created_at: 101,
+              model: "gpt-5.4",
+            },
+          },
+          {
+            type: "response.output_item.added",
+            output_index: 0,
+            item: {
+              id: "fc_1",
+              type: "function_call",
+              name: "CreatePlan",
+              call_id: "call_plan_1",
+              status: "in_progress",
+              arguments: "",
+            },
+          },
+          {
+            type: "response.function_call_arguments.delta",
+            item_id: "fc_1",
+            output_index: 0,
+            delta: firstDelta,
+          },
+          {
+            type: "response.function_call_arguments.delta",
+            item_id: "fc_1",
+            output_index: 0,
+            delta: secondDelta,
+          },
+          {
+            type: "response.function_call_arguments.delta",
+            item_id: "fc_1",
+            output_index: 0,
+            delta: thirdDelta,
+          },
+          {
+            type: "response.function_call_arguments.done",
+            item_id: "fc_1",
+            output_index: 0,
+            arguments: fullArguments,
+          },
+          {
+            type: "response.output_item.done",
+            output_index: 0,
+            item: {
+              id: "fc_1",
+              type: "function_call",
+              name: "CreatePlan",
+              call_id: "call_plan_1",
+              status: "completed",
+              arguments: fullArguments,
+            },
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_stream_tool_1",
+              created_at: 101,
+              model: "gpt-5.4",
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const listen = await app.listen({ host: "127.0.0.1", port: 0 });
+      const response = await fetch(`${listen}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-5.4",
+          stream: true,
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      });
+      const body = await response.text();
+      expect(response.status).toBe(200);
+      expect(body).toContain("data: [DONE]");
+
+      const chunks = parseSsePayload(body);
+      const toolCallChunks = chunks.filter((chunk) => {
+        const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+        const delta =
+          choices.length > 0 && choices[0] && typeof choices[0] === "object"
+            ? (choices[0] as Record<string, unknown>).delta
+            : null;
+        return Boolean(
+          delta &&
+            typeof delta === "object" &&
+            Array.isArray((delta as Record<string, unknown>).tool_calls),
+        );
+      });
+
+      expect(toolCallChunks.length).toBeGreaterThanOrEqual(4);
+      const firstToolCall = (
+        (((toolCallChunks[0].choices as Array<Record<string, unknown>>)[0].delta as Record<
+          string,
+          unknown
+        >).tool_calls as Array<Record<string, unknown>>)[0]
+      );
+      expect(firstToolCall).toMatchObject({
+        index: 0,
+        id: "call_plan_1",
+        type: "function",
+        function: {
+          name: "CreatePlan",
+          arguments: "",
+        },
+      });
+
+      const reconstructedArguments = toolCallChunks
+        .slice(1)
+        .map((chunk) => {
+          const delta = ((chunk.choices as Array<Record<string, unknown>>)[0]
+            .delta ?? {}) as Record<string, unknown>;
+          const toolCalls = (delta.tool_calls ?? []) as Array<Record<string, unknown>>;
+          const call = toolCalls[0] ?? {};
+          const fn = (call.function ?? {}) as Record<string, unknown>;
+          return typeof fn.arguments === "string" ? fn.arguments : "";
+        })
+        .join("");
+
+      expect(reconstructedArguments).toBe(fullArguments);
       await app.close();
     } finally {
       await upstream.close();
