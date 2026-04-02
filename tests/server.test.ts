@@ -135,7 +135,14 @@ function makeConfig(
     proxyLoggingEnabledDefault?: boolean;
     logReadLimitMax?: number;
     logFileMaxBytes?: number;
-    alias?: string;
+    aliases?: Array<{
+      alias: string;
+      upstreamModel: string;
+      reasoningEffort?: string;
+      reasoningSummary?: string;
+      serviceTier?: string;
+      contextWindow?: number;
+    }>;
   },
 ): AppConfig {
   const rootDir = path.dirname(authJsonPath);
@@ -154,13 +161,47 @@ function makeConfig(
     proxyLogStatePath: path.join(rootDir, "logging-state.json"),
     proxyLogReadLimitMax: options?.logReadLimitMax ?? 50,
     proxyLogFileMaxBytes: options?.logFileMaxBytes ?? 10 * 1024 * 1024,
-    gpt54FastXhighAlias: {
-      alias: options?.alias ?? "codex-gpt-5-4-fast-xhigh",
-      upstreamModel: "gpt-5.4",
-      reasoningEffort: "xhigh",
-      reasoningSummary: "auto",
-      serviceTier: "priority",
-    },
+    modelAliases:
+      options?.aliases ?? [
+        {
+          alias: "codex-gpt-5-4-high",
+          upstreamModel: "gpt-5.4",
+          reasoningEffort: "high",
+          reasoningSummary: "none",
+          contextWindow: 260000,
+        },
+        {
+          alias: "codex-gpt-5-4-high-fast",
+          upstreamModel: "gpt-5.4",
+          reasoningEffort: "high",
+          reasoningSummary: "none",
+          serviceTier: "priority",
+          contextWindow: 260000,
+        },
+        {
+          alias: "codex-gpt-5-4-xhigh",
+          upstreamModel: "gpt-5.4",
+          reasoningEffort: "xhigh",
+          reasoningSummary: "none",
+          contextWindow: 260000,
+        },
+        {
+          alias: "codex-gpt-5-4-xhigh-fast",
+          upstreamModel: "gpt-5.4",
+          reasoningEffort: "xhigh",
+          reasoningSummary: "none",
+          serviceTier: "priority",
+          contextWindow: 260000,
+        },
+        {
+          alias: "codex-gpt-5-4-fast-xhigh",
+          upstreamModel: "gpt-5.4",
+          reasoningEffort: "xhigh",
+          reasoningSummary: "none",
+          serviceTier: "priority",
+          contextWindow: 260000,
+        },
+      ],
   };
 }
 
@@ -204,16 +245,46 @@ describe("codex-auth-openai-proxy", () => {
         object: "list",
         data: [
           {
+            id: "codex-gpt-5-4-high",
+            object: "model",
+            created: 0,
+            owned_by: "codex-auth-openai-proxy",
+            context_window: 260000,
+          },
+          {
+            id: "codex-gpt-5-4-high-fast",
+            object: "model",
+            created: 0,
+            owned_by: "codex-auth-openai-proxy",
+            context_window: 260000,
+          },
+          {
+            id: "codex-gpt-5-4-xhigh",
+            object: "model",
+            created: 0,
+            owned_by: "codex-auth-openai-proxy",
+            context_window: 260000,
+          },
+          {
+            id: "codex-gpt-5-4-xhigh-fast",
+            object: "model",
+            created: 0,
+            owned_by: "codex-auth-openai-proxy",
+            context_window: 260000,
+          },
+          {
             id: "codex-gpt-5-4-fast-xhigh",
             object: "model",
             created: 0,
             owned_by: "codex-auth-openai-proxy",
+            context_window: 260000,
           },
           {
             id: "gpt-5.4",
             object: "model",
             created: 0,
             owned_by: "openai",
+            context_window: 260000,
           },
         ],
       });
@@ -233,7 +304,7 @@ describe("codex-auth-openai-proxy", () => {
       expect(body.model).toBe("gpt-5.4");
       expect(body.reasoning).toEqual({
         effort: "xhigh",
-        summary: "auto",
+        summary: "none",
       });
       expect(body.service_tier).toBe("priority");
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -1241,7 +1312,7 @@ describe("codex-auth-openai-proxy", () => {
           model: "gpt-5.4",
           reasoning: {
             effort: "xhigh",
-            summary: "auto",
+            summary: "none",
           },
           service_tier: "priority",
         },

@@ -69,6 +69,7 @@ interface ResolvedModelSelection {
   aliasApplied: boolean;
   defaultReasoning?: JsonMap;
   defaultServiceTier?: string;
+  contextWindow?: number;
 }
 
 function resolveRequestedModel(
@@ -76,16 +77,27 @@ function resolveRequestedModel(
   config: AppConfig,
 ): ResolvedModelSelection {
   const requestedModel = ensureText(rawModel) ?? config.defaultModel;
-  if (requestedModel === config.gpt54FastXhighAlias.alias) {
+  const matchedAlias = config.modelAliases.find(
+    (alias) => requestedModel === alias.alias,
+  );
+  if (matchedAlias) {
     return {
       publicModel: requestedModel,
-      upstreamModel: config.gpt54FastXhighAlias.upstreamModel,
+      upstreamModel: matchedAlias.upstreamModel,
       aliasApplied: true,
-      defaultReasoning: {
-        effort: config.gpt54FastXhighAlias.reasoningEffort,
-        summary: config.gpt54FastXhighAlias.reasoningSummary,
-      },
-      defaultServiceTier: config.gpt54FastXhighAlias.serviceTier,
+      defaultReasoning:
+        matchedAlias.reasoningEffort || matchedAlias.reasoningSummary
+          ? {
+              ...(matchedAlias.reasoningEffort
+                ? { effort: matchedAlias.reasoningEffort }
+                : {}),
+              ...(matchedAlias.reasoningSummary
+                ? { summary: matchedAlias.reasoningSummary }
+                : {}),
+            }
+          : undefined,
+      defaultServiceTier: matchedAlias.serviceTier,
+      contextWindow: matchedAlias.contextWindow,
     };
   }
   return {
@@ -527,25 +539,38 @@ export function toModelsResponse(
       const visibility = ensureText(model.visibility);
       return visibility === null || visibility === "list";
     })
-    .map((model) => ({
-      id: ensureText(model.slug) ?? ensureText(model.id) ?? "unknown",
-      object: "model",
-      created: 0,
-      owned_by: "openai",
-    }));
+    .map((model) => {
+      const id = ensureText(model.slug) ?? ensureText(model.id) ?? "unknown";
+      const inheritedContextWindow = config.modelAliases.find(
+        (alias) => alias.upstreamModel === id && typeof alias.contextWindow === "number",
+      )?.contextWindow;
 
-  if (models.some((model) => model.id === config.gpt54FastXhighAlias.upstreamModel)) {
-    models.unshift({
-      id: config.gpt54FastXhighAlias.alias,
+      return {
+        id,
+        object: "model",
+        created: 0,
+        owned_by: "openai",
+        ...(typeof inheritedContextWindow === "number"
+          ? { context_window: inheritedContextWindow }
+          : {}),
+      };
+    });
+
+  const syntheticModels = config.modelAliases
+    .filter((alias) =>
+      models.some((model) => model.id === alias.upstreamModel),
+    )
+    .map((alias) => ({
+      id: alias.alias,
       object: "model",
       created: 0,
       owned_by: "codex-auth-openai-proxy",
-    });
-  }
+      ...(alias.contextWindow ? { context_window: alias.contextWindow } : {}),
+    }));
 
   return {
     object: "list",
-    data: models,
+    data: [...syntheticModels, ...models],
   };
 }
 

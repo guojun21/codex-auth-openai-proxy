@@ -240,7 +240,14 @@ export async function buildServer(config: AppConfig) {
       account_id: auth.accountId,
       client_version: config.clientVersion,
       logging_enabled: proxyLogger.isEnabled(),
-      alias_gpt54_fast_xhigh: config.gpt54FastXhighAlias.alias,
+      model_aliases: config.modelAliases.map((alias) => ({
+        alias: alias.alias,
+        upstream_model: alias.upstreamModel,
+        reasoning_effort: alias.reasoningEffort ?? null,
+        reasoning_summary: alias.reasoningSummary ?? null,
+        service_tier: alias.serviceTier ?? null,
+        context_window: alias.contextWindow ?? null,
+      })),
     };
   });
 

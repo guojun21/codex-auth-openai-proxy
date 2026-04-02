@@ -20,13 +20,14 @@ export interface AppConfig {
   proxyLogStatePath: string;
   proxyLogReadLimitMax: number;
   proxyLogFileMaxBytes: number;
-  gpt54FastXhighAlias: {
+  modelAliases: Array<{
     alias: string;
     upstreamModel: string;
-    reasoningEffort: string;
-    reasoningSummary: string;
-    serviceTier: string;
-  };
+    reasoningEffort?: string;
+    reasoningSummary?: string;
+    serviceTier?: string;
+    contextWindow?: number;
+  }>;
 }
 
 const DEFAULT_CLIENT_VERSION = "0.111.0";
@@ -113,14 +114,49 @@ export async function resolveConfig(): Promise<AppConfig> {
     ),
     proxyLogReadLimitMax: envNumber("PROXY_LOG_READ_LIMIT_MAX", 200),
     proxyLogFileMaxBytes: envNumber("PROXY_LOG_FILE_MAX_BYTES", 10 * 1024 * 1024),
-    gpt54FastXhighAlias: {
-      alias:
-        process.env.CODEX_ALIAS_GPT54_FAST_XHIGH ??
-        "codex-gpt-5-4-fast-xhigh",
-      upstreamModel: "gpt-5.4",
-      reasoningEffort: "xhigh",
-      reasoningSummary: "auto",
-      serviceTier: "priority",
-    },
+    modelAliases: [
+      {
+        alias: process.env.CODEX_ALIAS_GPT54_HIGH ?? "codex-gpt-5-4-high",
+        upstreamModel: "gpt-5.4",
+        reasoningEffort: "high",
+        reasoningSummary: "none",
+        contextWindow: 260_000,
+      },
+      {
+        alias:
+          process.env.CODEX_ALIAS_GPT54_HIGH_FAST ?? "codex-gpt-5-4-high-fast",
+        upstreamModel: "gpt-5.4",
+        reasoningEffort: "high",
+        reasoningSummary: "none",
+        serviceTier: "priority",
+        contextWindow: 260_000,
+      },
+      {
+        alias: process.env.CODEX_ALIAS_GPT54_XHIGH ?? "codex-gpt-5-4-xhigh",
+        upstreamModel: "gpt-5.4",
+        reasoningEffort: "xhigh",
+        reasoningSummary: "none",
+        contextWindow: 260_000,
+      },
+      {
+        alias:
+          process.env.CODEX_ALIAS_GPT54_XHIGH_FAST ?? "codex-gpt-5-4-xhigh-fast",
+        upstreamModel: "gpt-5.4",
+        reasoningEffort: "xhigh",
+        reasoningSummary: "none",
+        serviceTier: "priority",
+        contextWindow: 260_000,
+      },
+      {
+        alias:
+          process.env.CODEX_ALIAS_GPT54_FAST_XHIGH ??
+          "codex-gpt-5-4-fast-xhigh",
+        upstreamModel: "gpt-5.4",
+        reasoningEffort: "xhigh",
+        reasoningSummary: "none",
+        serviceTier: "priority",
+        contextWindow: 260_000,
+      },
+    ],
   };
 }
