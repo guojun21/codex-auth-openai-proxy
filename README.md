@@ -8,6 +8,9 @@ Local OpenAI-compatible proxy backed by the ChatGPT/Codex credentials stored in 
 - `GET /v1/models`
 - `POST /v1/responses`
 - `POST /v1/chat/completions`
+- `GET /admin/logging`
+- `POST /admin/logging`
+- `GET /admin/logs`
 
 ## Scope
 
@@ -36,6 +39,9 @@ pnpm start
 Default server:
 
 - base URL: `http://127.0.0.1:8787/v1`
+- alias model: `codex-gpt-5-4-fast-xhigh`
+  - upstream model: `gpt-5.4`
+  - enforced defaults: `service_tier=priority`, `reasoning.effort=xhigh`, `reasoning.summary=auto`
 
 Example:
 
@@ -48,6 +54,31 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   }'
 ```
 
+Alias model example:
+
+```bash
+curl http://127.0.0.1:8787/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "codex-gpt-5-4-fast-xhigh",
+    "messages": [{"role": "user", "content": "Reply with exactly ALIAS_OK"}]
+  }'
+```
+
+Logging admin example:
+
+```bash
+curl http://127.0.0.1:8787/admin/logging \
+  -H "Authorization: Bearer $PROXY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled":true}'
+
+curl "http://127.0.0.1:8787/admin/logs?limit=20" \
+  -H "Authorization: Bearer $PROXY_API_KEY"
+```
+
+When logging is disabled, request traffic is not appended to disk. Only the enable transition is force-written so detailed logging can start immediately after you turn it on.
+
 ## Environment Variables
 
 - `PORT`: default `8787`
@@ -57,5 +88,10 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 - `CODEX_REFRESH_URL`: default `https://auth.openai.com/oauth/token`
 - `CODEX_CLIENT_VERSION`: optional override for upstream `/models`
 - `CODEX_DEFAULT_MODEL`: default `gpt-5.4`
+- `CODEX_ALIAS_GPT54_FAST_XHIGH`: default `codex-gpt-5-4-fast-xhigh`
 - `PROXY_API_KEY`: optional API key required by this proxy itself
 - `REQUEST_TIMEOUT_MS`: default `120000`
+- `PROXY_LOGGING_ENABLED`: default `false`
+- `PROXY_LOG_FILE_PATH`: default `./var/request-debug.jsonl`
+- `PROXY_LOG_STATE_PATH`: default `./var/logging-state.json`
+- `PROXY_LOG_READ_LIMIT_MAX`: default `200`

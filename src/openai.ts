@@ -1,9 +1,114 @@
 import { randomUUID } from "node:crypto";
 
+import type { AppConfig } from "./config.js";
+
 export type JsonMap = Record<string, unknown>;
 
 function ensureText(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function normalizeEffort(value: string): string {
+  if (value === "fast") {
+    return "low";
+  }
+  if (value === "balanced") {
+    return "medium";
+  }
+  if (value === "deep") {
+    return "high";
+  }
+  if (value === "max") {
+    return "xhigh";
+  }
+  return value;
+}
+
+function normalizeReasoning(body: JsonMap): JsonMap | undefined {
+  if (body.reasoning && typeof body.reasoning === "object") {
+    const result = { ...(body.reasoning as JsonMap) };
+    const effort = ensureText(result.effort);
+    if (effort) {
+      result.effort = normalizeEffort(effort);
+    }
+    return result;
+  }
+
+  const effort = ensureText(body.reasoning_effort) ?? ensureText(body.reasoningEffort);
+  const summary = ensureText(body.reasoning_summary) ?? ensureText(body.reasoningSummary);
+  if (!effort && !summary) {
+    return undefined;
+  }
+
+  return {
+    ...(effort ? { effort: normalizeEffort(effort) } : {}),
+    ...(summary ? { summary } : {}),
+  };
+}
+
+function normalizeServiceTier(body: JsonMap): string | undefined {
+  return ensureText(body.service_tier) ?? ensureText(body.serviceTier) ?? undefined;
+}
+
+function mergeReasoning(
+  defaults: JsonMap | undefined,
+  reasoning: JsonMap | undefined,
+): JsonMap | undefined {
+  if (!defaults && !reasoning) {
+    return undefined;
+  }
+  return {
+    ...(defaults ?? {}),
+    ...(reasoning ?? {}),
+  };
+}
+
+interface ResolvedModelSelection {
+  publicModel: string;
+  upstreamModel: string;
+  aliasApplied: boolean;
+  defaultReasoning?: JsonMap;
+  defaultServiceTier?: string;
+}
+
+function resolveRequestedModel(
+  rawModel: unknown,
+  config: AppConfig,
+): ResolvedModelSelection {
+  const requestedModel = ensureText(rawModel) ?? config.defaultModel;
+  if (requestedModel === config.gpt54FastXhighAlias.alias) {
+    return {
+      publicModel: requestedModel,
+      upstreamModel: config.gpt54FastXhighAlias.upstreamModel,
+      aliasApplied: true,
+      defaultReasoning: {
+        effort: config.gpt54FastXhighAlias.reasoningEffort,
+        summary: config.gpt54FastXhighAlias.reasoningSummary,
+      },
+      defaultServiceTier: config.gpt54FastXhighAlias.serviceTier,
+    };
+  }
+  return {
+    publicModel: requestedModel,
+    upstreamModel: requestedModel,
+    aliasApplied: false,
+  };
+}
+
+function normalizeText(body: JsonMap): JsonMap | undefined {
+  if (body.text && typeof body.text === "object") {
+    return body.text as JsonMap;
+  }
+
+  const verbosity =
+    ensureText(body.verbosity) ??
+    ensureText(body.text_verbosity) ??
+    ensureText(body.textVerbosity);
+  if (!verbosity) {
+    return undefined;
+  }
+
+  return { verbosity };
 }
 
 function normalizeInputTextContent(
@@ -108,8 +213,13 @@ function extractInstructionTexts(messages: JsonMap[]): string {
 
 export function buildUpstreamResponsesRequest(
   body: JsonMap,
-  defaultModel: string,
-): JsonMap {
+  config: AppConfig,
+): {
+  upstreamBody: JsonMap;
+  publicModel: string;
+  aliasApplied: boolean;
+} {
+  const selection = resolveRequestedModel(body.model, config);
   const explicitInput = body.input;
   let normalizedInput: unknown = explicitInput;
 
@@ -159,7 +269,10 @@ export function buildUpstreamResponsesRequest(
   }
 
   return {
-    model: ensureText(body.model) ?? defaultModel,
+    publicModel: selection.publicModel,
+    aliasApplied: selection.aliasApplied,
+    upstreamBody: {
+      model: selection.upstreamModel,
     instructions: typeof body.instructions === "string" ? body.instructions : "",
     input: normalizedInput,
     tools: Array.isArray(body.tools) ? body.tools : [],
@@ -168,17 +281,22 @@ export function buildUpstreamResponsesRequest(
     store: Boolean(body.store),
     stream: true,
     include: Array.isArray(body.include) ? body.include : [],
-    reasoning:
-      body.reasoning && typeof body.reasoning === "object" ? body.reasoning : undefined,
-    service_tier: ensureText(body.service_tier) ?? undefined,
-    text: body.text && typeof body.text === "object" ? body.text : undefined,
+      reasoning: mergeReasoning(selection.defaultReasoning, normalizeReasoning(body)),
+      service_tier: normalizeServiceTier(body) ?? selection.defaultServiceTier,
+    text: normalizeText(body),
+    },
   };
 }
 
 export function buildUpstreamChatRequest(
   body: JsonMap,
-  defaultModel: string,
-): JsonMap {
+  config: AppConfig,
+): {
+  upstreamBody: JsonMap;
+  publicModel: string;
+  aliasApplied: boolean;
+} {
+  const selection = resolveRequestedModel(body.model, config);
   const messages = Array.isArray(body.messages)
     ? (body.messages.filter(
         (value): value is JsonMap => Boolean(value) && typeof value === "object",
@@ -196,7 +314,10 @@ export function buildUpstreamChatRequest(
     .filter(Boolean);
 
   return {
-    model: ensureText(body.model) ?? defaultModel,
+    publicModel: selection.publicModel,
+    aliasApplied: selection.aliasApplied,
+    upstreamBody: {
+      model: selection.upstreamModel,
     instructions: extractInstructionTexts(messages),
     input,
     tools: Array.isArray(body.tools) ? body.tools : [],
@@ -204,7 +325,11 @@ export function buildUpstreamChatRequest(
     parallel_tool_calls: Boolean(body.parallel_tool_calls),
     store: false,
     stream: true,
-    include: [],
+    include: Array.isArray(body.include) ? body.include : [],
+      reasoning: mergeReasoning(selection.defaultReasoning, normalizeReasoning(body)),
+      service_tier: normalizeServiceTier(body) ?? selection.defaultServiceTier,
+    text: normalizeText(body),
+    },
   };
 }
 
@@ -298,20 +423,32 @@ export function parseUpstreamResponsePayload(events: Array<JsonMap | null>): Par
 
 export function toModelsResponse(
   upstreamModels: Array<JsonMap>,
+  config: AppConfig,
 ): JsonMap {
+  const models = upstreamModels
+    .filter((model) => {
+      const visibility = ensureText(model.visibility);
+      return visibility === null || visibility === "list";
+    })
+    .map((model) => ({
+      id: ensureText(model.slug) ?? ensureText(model.id) ?? "unknown",
+      object: "model",
+      created: 0,
+      owned_by: "openai",
+    }));
+
+  if (models.some((model) => model.id === config.gpt54FastXhighAlias.upstreamModel)) {
+    models.unshift({
+      id: config.gpt54FastXhighAlias.alias,
+      object: "model",
+      created: 0,
+      owned_by: "codex-auth-openai-proxy",
+    });
+  }
+
   return {
     object: "list",
-    data: upstreamModels
-      .filter((model) => {
-        const visibility = ensureText(model.visibility);
-        return visibility === null || visibility === "list";
-      })
-      .map((model) => ({
-        id: ensureText(model.slug) ?? ensureText(model.id) ?? "unknown",
-        object: "model",
-        created: 0,
-        owned_by: "openai",
-      })),
+    data: models,
   };
 }
 

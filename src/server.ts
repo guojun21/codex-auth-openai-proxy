@@ -1,9 +1,8 @@
-import { Readable } from "node:stream";
-
 import Fastify from "fastify";
 
 import type { AppConfig } from "./config.js";
 import { fetchWithAuthRetry, resolveUpstreamAuth } from "./auth.js";
+import { ProxyLogger, sanitizeForLog, sanitizeHeaders } from "./logging.js";
 import {
   buildFallbackResponsesObject,
   buildUpstreamChatRequest,
@@ -32,6 +31,38 @@ function ensureAuthorized(requestHeaders: Record<string, unknown>, proxyApiKey?:
   if (token !== proxyApiKey) {
     throw Object.assign(new Error("Unauthorized"), { statusCode: 401 });
   }
+}
+
+function requestPath(url: string): string {
+  try {
+    return new URL(url, "http://127.0.0.1").pathname;
+  } catch {
+    return url.split("?")[0] ?? url;
+  }
+}
+
+function statusCodeFromError(error: unknown): number {
+  return typeof (error as { statusCode?: unknown }).statusCode === "number"
+    ? (error as { statusCode: number }).statusCode
+    : 500;
+}
+
+function proxyErrorBody(error: unknown): JsonMap {
+  return {
+    error: {
+      message: error instanceof Error ? error.message : "Unexpected error",
+      type: "proxy_error",
+    },
+  };
+}
+
+function serializeError(error: unknown): JsonMap {
+  const body = proxyErrorBody(error);
+  return {
+    status_code: statusCodeFromError(error),
+    ...(body.error && typeof body.error === "object" ? (body.error as JsonMap) : body),
+    ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+  };
 }
 
 async function relayUpstreamError(response: Response): Promise<{
@@ -111,6 +142,8 @@ export async function buildServer(config: AppConfig) {
   const app = Fastify({
     logger: true,
   });
+  const proxyLogger = new ProxyLogger(config);
+  await proxyLogger.init();
 
   let cachedModels:
     | {
@@ -127,14 +160,107 @@ export async function buildServer(config: AppConfig) {
       auth_json_path: config.authJsonPath,
       account_id: auth.accountId,
       client_version: config.clientVersion,
+      logging_enabled: proxyLogger.isEnabled(),
+      alias_gpt54_fast_xhigh: config.gpt54FastXhighAlias.alias,
     };
   });
 
+  app.get("/admin/logging", async (request, reply) => {
+    try {
+      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKey);
+      return proxyLogger.status();
+    } catch (error) {
+      return reply.code(statusCodeFromError(error)).send(proxyErrorBody(error));
+    }
+  });
+
+  app.post("/admin/logging", async (request, reply) => {
+    const startedAt = Date.now();
+    const requestBody = (request.body ?? {}) as JsonMap;
+    try {
+      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKey);
+      if (typeof requestBody.enabled !== "boolean") {
+        return reply.code(400).send({
+          error: {
+            message: "enabled must be a boolean",
+            type: "invalid_request_error",
+          },
+        });
+      }
+
+      const status = await proxyLogger.setEnabled(requestBody.enabled);
+      await proxyLogger.record(
+        {
+          kind: "control",
+          action: "logging.set_enabled",
+          enabled: requestBody.enabled,
+          method: request.method,
+          path: requestPath(request.url),
+          statusCode: 200,
+          durationMs: Date.now() - startedAt,
+          request: {
+            headers: sanitizeHeaders(request.headers as Record<string, unknown>),
+            body: sanitizeForLog(requestBody) as JsonMap,
+          },
+          response: status,
+        },
+        { force: requestBody.enabled },
+      );
+      return status;
+    } catch (error) {
+      return reply.code(statusCodeFromError(error)).send(proxyErrorBody(error));
+    }
+  });
+
+  app.get("/admin/logs", async (request, reply) => {
+    try {
+      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKey);
+      const query = (request.query ?? {}) as Record<string, unknown>;
+      const rawLimit = query.limit;
+      const limit =
+        typeof rawLimit === "number"
+          ? rawLimit
+          : typeof rawLimit === "string"
+            ? Number(rawLimit)
+            : 100;
+      return {
+        ...proxyLogger.status(),
+        entries: await proxyLogger.list(Number.isFinite(limit) ? limit : 100),
+      };
+    } catch (error) {
+      return reply.code(statusCodeFromError(error)).send(proxyErrorBody(error));
+    }
+  });
+
   app.get("/v1/models", async (request, reply) => {
+    const startedAt = Date.now();
+    const requestDetails = {
+      headers: sanitizeHeaders(request.headers as Record<string, unknown>),
+      query: {
+        client_version: config.clientVersion,
+      },
+    };
+
     try {
       ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKey);
       const now = Date.now();
       if (cachedModels && cachedModels.expiresAt > now) {
+        await proxyLogger.record({
+          kind: "request",
+          action: "models.list",
+          method: request.method,
+          path: requestPath(request.url),
+          statusCode: 200,
+          durationMs: Date.now() - startedAt,
+          request: requestDetails,
+          upstream: {
+            endpoint: "models",
+            cache: "hit",
+          },
+          response: {
+            body: cachedModels.body,
+          },
+        });
         return cachedModels.body;
       }
 
@@ -144,6 +270,25 @@ export async function buildServer(config: AppConfig) {
 
       if (!upstream.ok) {
         const relayed = await relayUpstreamError(upstream);
+        await proxyLogger.record({
+          kind: "request",
+          action: "models.list",
+          method: request.method,
+          path: requestPath(request.url),
+          statusCode: relayed.statusCode,
+          durationMs: Date.now() - startedAt,
+          request: requestDetails,
+          upstream: {
+            endpoint: "models",
+            url: url.toString(),
+            status: upstream.status,
+            cache: "miss",
+            response_body: relayed.body,
+          },
+          response: {
+            body: relayed.body,
+          },
+        });
         return reply.code(relayed.statusCode).send(relayed.body);
       }
 
@@ -153,59 +298,166 @@ export async function buildServer(config: AppConfig) {
             (value): value is JsonMap => Boolean(value) && typeof value === "object",
           ) as JsonMap[])
         : [];
-      const body = toModelsResponse(models);
+      const body = toModelsResponse(models, config);
       cachedModels = {
         expiresAt: now + 60_000,
         body,
       };
-      return body;
-    } catch (error) {
-      const statusCode =
-        typeof (error as { statusCode?: unknown }).statusCode === "number"
-          ? ((error as { statusCode: number }).statusCode)
-          : 500;
-      return reply.code(statusCode).send({
-        error: {
-          message: error instanceof Error ? error.message : "Unexpected error",
-          type: "proxy_error",
+
+      await proxyLogger.record({
+        kind: "request",
+        action: "models.list",
+        method: request.method,
+        path: requestPath(request.url),
+        statusCode: 200,
+        durationMs: Date.now() - startedAt,
+        request: requestDetails,
+        upstream: {
+          endpoint: "models",
+          url: url.toString(),
+          status: upstream.status,
+          cache: "miss",
+          response_body: payload,
+        },
+        response: {
+          body,
         },
       });
+      return body;
+    } catch (error) {
+      const statusCode = statusCodeFromError(error);
+      const body = proxyErrorBody(error);
+      await proxyLogger.record({
+        kind: "request",
+        action: "models.list",
+        method: request.method,
+        path: requestPath(request.url),
+        statusCode,
+        durationMs: Date.now() - startedAt,
+        request: requestDetails,
+        error: serializeError(error),
+        response: {
+          body,
+        },
+      });
+      return reply.code(statusCode).send(body);
     }
   });
 
   app.post("/v1/responses", async (request, reply) => {
+    const startedAt = Date.now();
+    const requestBody = (request.body ?? {}) as JsonMap;
+    const routePath = requestPath(request.url);
+    const requestDetails = {
+      headers: sanitizeHeaders(request.headers as Record<string, unknown>),
+      body: sanitizeForLog(requestBody),
+    };
+
     try {
       ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKey);
-      const body = (request.body ?? {}) as JsonMap;
-      const upstreamRequest = buildUpstreamResponsesRequest(body, config.defaultModel);
-      const streamRequested = Boolean(body.stream);
-      const upstream = await postUpstreamResponses(config, upstreamRequest);
+      const upstreamRequest = buildUpstreamResponsesRequest(requestBody, config);
+      const streamRequested = Boolean(requestBody.stream);
+      const upstream = await postUpstreamResponses(config, upstreamRequest.upstreamBody);
+      const upstreamDetails: JsonMap = {
+        endpoint: "responses",
+        url: `${config.upstreamBaseUrl}/responses`,
+        method: "POST",
+        request_body: upstreamRequest.upstreamBody,
+        alias_applied: upstreamRequest.aliasApplied,
+        public_model: upstreamRequest.publicModel,
+        status: upstream.status,
+      };
 
       if (!upstream.ok) {
         const relayed = await relayUpstreamError(upstream);
+        upstreamDetails.response_body = relayed.body;
+        await proxyLogger.record({
+          kind: "request",
+          action: streamRequested ? "responses.create.stream" : "responses.create",
+          method: request.method,
+          path: routePath,
+          statusCode: relayed.statusCode,
+          durationMs: Date.now() - startedAt,
+          request: requestDetails as JsonMap,
+          upstream: upstreamDetails,
+          response: {
+            body: relayed.body,
+          },
+        });
         return reply.code(relayed.statusCode).send(relayed.body);
       }
 
       if (!upstream.body) {
-        return reply.code(502).send({
+        const body = {
           error: {
             message: "Upstream response body was empty",
             type: "upstream_error",
           },
+        };
+        await proxyLogger.record({
+          kind: "request",
+          action: streamRequested ? "responses.create.stream" : "responses.create",
+          method: request.method,
+          path: routePath,
+          statusCode: 502,
+          durationMs: Date.now() - startedAt,
+          request: requestDetails as JsonMap,
+          upstream: upstreamDetails,
+          response: {
+            body,
+          },
         });
+        return reply.code(502).send(body);
       }
 
       if (streamRequested) {
+        const captureEvents = proxyLogger.isEnabled() || upstreamRequest.aliasApplied;
+        const loggedEvents: unknown[] = [];
+
         reply.hijack();
         reply.raw.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-cache",
           connection: "keep-alive",
         });
-        for await (const chunk of Readable.fromWeb(upstream.body as never)) {
-          reply.raw.write(chunk);
+
+        for await (const frame of iterateSseFrames(upstream.body)) {
+          const event = safeParseSseJson(frame);
+          if (captureEvents) {
+            loggedEvents.push(event ?? { event: frame.event, data: frame.data, raw: frame.raw });
+          }
+
+          if (
+            upstreamRequest.aliasApplied &&
+            event?.response &&
+            typeof event.response === "object"
+          ) {
+            (event.response as JsonMap).model = upstreamRequest.publicModel;
+            reply.raw.write(formatSseData(event));
+            continue;
+          }
+
+          reply.raw.write(`${frame.raw}\n\n`);
         }
         reply.raw.end();
+
+        if (proxyLogger.isEnabled()) {
+          upstreamDetails.sse_events = loggedEvents;
+          await proxyLogger.record({
+            kind: "request",
+            action: "responses.create.stream",
+            method: request.method,
+            path: routePath,
+            statusCode: 200,
+            durationMs: Date.now() - startedAt,
+            request: requestDetails as JsonMap,
+            upstream: upstreamDetails,
+            response: {
+              stream: true,
+              model: upstreamRequest.publicModel,
+            },
+          });
+        }
         return reply;
       }
 
@@ -213,49 +465,141 @@ export async function buildServer(config: AppConfig) {
       const events = frames.map(safeParseSseJson);
       const parsed = parseUpstreamResponsePayload(events);
       const completedResponse = parsed.response ?? buildFallbackResponsesObject(parsed);
-      return reply.send(completedResponse);
-    } catch (error) {
-      const statusCode =
-        typeof (error as { statusCode?: unknown }).statusCode === "number"
-          ? ((error as { statusCode: number }).statusCode)
-          : 500;
-      return reply.code(statusCode).send({
-        error: {
-          message: error instanceof Error ? error.message : "Unexpected error",
-          type: "proxy_error",
+      if (upstreamRequest.aliasApplied) {
+        completedResponse.model = upstreamRequest.publicModel;
+      }
+      if (proxyLogger.isEnabled()) {
+        upstreamDetails.sse_events = events;
+      }
+      await proxyLogger.record({
+        kind: "request",
+        action: "responses.create",
+        method: request.method,
+        path: routePath,
+        statusCode: 200,
+        durationMs: Date.now() - startedAt,
+        request: requestDetails as JsonMap,
+        upstream: upstreamDetails,
+        response: {
+          body: completedResponse,
         },
       });
+      return reply.send(completedResponse);
+    } catch (error) {
+      const statusCode = statusCodeFromError(error);
+      const body = proxyErrorBody(error);
+      await proxyLogger.record({
+        kind: "request",
+        action: Boolean(requestBody.stream) ? "responses.create.stream" : "responses.create",
+        method: request.method,
+        path: routePath,
+        statusCode,
+        durationMs: Date.now() - startedAt,
+        request: requestDetails as JsonMap,
+        error: serializeError(error),
+        response: {
+          body,
+        },
+      });
+      return reply.code(statusCode).send(body);
     }
   });
 
   app.post("/v1/chat/completions", async (request, reply) => {
+    const startedAt = Date.now();
+    const requestBody = (request.body ?? {}) as JsonMap;
+    const routePath = requestPath(request.url);
+    const requestDetails = {
+      headers: sanitizeHeaders(request.headers as Record<string, unknown>),
+      body: sanitizeForLog(requestBody),
+    };
+
     try {
       ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKey);
-      const body = (request.body ?? {}) as JsonMap;
-      const streamRequested = Boolean(body.stream);
-      const upstreamRequest = buildUpstreamChatRequest(body, config.defaultModel);
-      const upstream = await postUpstreamResponses(config, upstreamRequest);
+      const streamRequested = Boolean(requestBody.stream);
+      const upstreamRequest = buildUpstreamChatRequest(requestBody, config);
+      const upstream = await postUpstreamResponses(config, upstreamRequest.upstreamBody);
+      const upstreamDetails: JsonMap = {
+        endpoint: "responses",
+        url: `${config.upstreamBaseUrl}/responses`,
+        method: "POST",
+        request_body: upstreamRequest.upstreamBody,
+        alias_applied: upstreamRequest.aliasApplied,
+        public_model: upstreamRequest.publicModel,
+        status: upstream.status,
+      };
 
       if (!upstream.ok) {
         const relayed = await relayUpstreamError(upstream);
+        upstreamDetails.response_body = relayed.body;
+        await proxyLogger.record({
+          kind: "request",
+          action: streamRequested ? "chat.completions.stream" : "chat.completions.create",
+          method: request.method,
+          path: routePath,
+          statusCode: relayed.statusCode,
+          durationMs: Date.now() - startedAt,
+          request: requestDetails as JsonMap,
+          upstream: upstreamDetails,
+          response: {
+            body: relayed.body,
+          },
+        });
         return reply.code(relayed.statusCode).send(relayed.body);
       }
 
       if (!upstream.body) {
-        return reply.code(502).send({
+        const body = {
           error: {
             message: "Upstream response body was empty",
             type: "upstream_error",
           },
+        };
+        await proxyLogger.record({
+          kind: "request",
+          action: streamRequested ? "chat.completions.stream" : "chat.completions.create",
+          method: request.method,
+          path: routePath,
+          statusCode: 502,
+          durationMs: Date.now() - startedAt,
+          request: requestDetails as JsonMap,
+          upstream: upstreamDetails,
+          response: {
+            body,
+          },
         });
+        return reply.code(502).send(body);
       }
 
       if (!streamRequested) {
         const frames = await collectSseFrames(upstream.body);
         const events = frames.map(safeParseSseJson);
         const parsed = parseUpstreamResponsePayload(events);
-        return reply.send(toChatCompletionResponse(parsed));
+        const responseBody = toChatCompletionResponse(parsed);
+        if (upstreamRequest.aliasApplied) {
+          responseBody.model = upstreamRequest.publicModel;
+        }
+        if (proxyLogger.isEnabled()) {
+          upstreamDetails.sse_events = events;
+        }
+        await proxyLogger.record({
+          kind: "request",
+          action: "chat.completions.create",
+          method: request.method,
+          path: routePath,
+          statusCode: 200,
+          durationMs: Date.now() - startedAt,
+          request: requestDetails as JsonMap,
+          upstream: upstreamDetails,
+          response: {
+            body: responseBody,
+          },
+        });
+        return reply.send(responseBody);
       }
+
+      const captureEvents = proxyLogger.isEnabled();
+      const loggedEvents: unknown[] = [];
 
       reply.hijack();
       reply.raw.writeHead(200, {
@@ -266,7 +610,7 @@ export async function buildServer(config: AppConfig) {
 
       let sentRole = false;
       let responseId = `chatcmpl_${Date.now()}`;
-      let model = String(body.model ?? config.defaultModel);
+      let model = upstreamRequest.publicModel;
       let created = Math.floor(Date.now() / 1000);
       let toolIndex = 0;
       let finishReason: "stop" | "tool_calls" = "stop";
@@ -291,6 +635,9 @@ export async function buildServer(config: AppConfig) {
 
       for await (const frame of iterateSseFrames(upstream.body)) {
         const event = safeParseSseJson(frame);
+        if (captureEvents) {
+          loggedEvents.push(event ?? { event: frame.event, data: frame.data, raw: frame.raw });
+        }
         if (!event) {
           continue;
         }
@@ -299,7 +646,9 @@ export async function buildServer(config: AppConfig) {
         if (type === "response.created" && event.response && typeof event.response === "object") {
           const responseObj = event.response as JsonMap;
           responseId = String(responseObj.id ?? responseId);
-          model = String(responseObj.model ?? model);
+          if (!upstreamRequest.aliasApplied) {
+            model = String(responseObj.model ?? model);
+          }
           created =
             typeof responseObj.created_at === "number"
               ? responseObj.created_at
@@ -352,6 +701,24 @@ export async function buildServer(config: AppConfig) {
           writeChunk({}, finishReason);
           reply.raw.write("data: [DONE]\n\n");
           reply.raw.end();
+          if (proxyLogger.isEnabled()) {
+            upstreamDetails.sse_events = loggedEvents;
+            await proxyLogger.record({
+              kind: "request",
+              action: "chat.completions.stream",
+              method: request.method,
+              path: routePath,
+              statusCode: 200,
+              durationMs: Date.now() - startedAt,
+              request: requestDetails as JsonMap,
+              upstream: upstreamDetails,
+              response: {
+                stream: true,
+                model,
+                finish_reason: finishReason,
+              },
+            });
+          }
           return reply;
         }
       }
@@ -362,18 +729,42 @@ export async function buildServer(config: AppConfig) {
       writeChunk({}, finishReason);
       reply.raw.write("data: [DONE]\n\n");
       reply.raw.end();
+      if (proxyLogger.isEnabled()) {
+        upstreamDetails.sse_events = loggedEvents;
+        await proxyLogger.record({
+          kind: "request",
+          action: "chat.completions.stream",
+          method: request.method,
+          path: routePath,
+          statusCode: 200,
+          durationMs: Date.now() - startedAt,
+          request: requestDetails as JsonMap,
+          upstream: upstreamDetails,
+          response: {
+            stream: true,
+            model,
+            finish_reason: finishReason,
+          },
+        });
+      }
       return reply;
     } catch (error) {
-      const statusCode =
-        typeof (error as { statusCode?: unknown }).statusCode === "number"
-          ? ((error as { statusCode: number }).statusCode)
-          : 500;
-      return reply.code(statusCode).send({
-        error: {
-          message: error instanceof Error ? error.message : "Unexpected error",
-          type: "proxy_error",
+      const statusCode = statusCodeFromError(error);
+      const body = proxyErrorBody(error);
+      await proxyLogger.record({
+        kind: "request",
+        action: Boolean(requestBody.stream) ? "chat.completions.stream" : "chat.completions.create",
+        method: request.method,
+        path: routePath,
+        statusCode,
+        durationMs: Date.now() - startedAt,
+        request: requestDetails as JsonMap,
+        error: serializeError(error),
+        response: {
+          body,
         },
       });
+      return reply.code(statusCode).send(body);
     }
   });
 

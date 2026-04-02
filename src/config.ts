@@ -15,6 +15,17 @@ export interface AppConfig {
   defaultModel: string;
   proxyApiKey?: string;
   requestTimeoutMs: number;
+  proxyLoggingEnabledDefault: boolean;
+  proxyLogFilePath: string;
+  proxyLogStatePath: string;
+  proxyLogReadLimitMax: number;
+  gpt54FastXhighAlias: {
+    alias: string;
+    upstreamModel: string;
+    reasoningEffort: string;
+    reasoningSummary: string;
+    serviceTier: string;
+  };
 }
 
 const DEFAULT_CLIENT_VERSION = "0.111.0";
@@ -38,6 +49,21 @@ function envNumber(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function envBoolean(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
+}
+
 export async function detectClientVersion(): Promise<string> {
   if (process.env.CODEX_CLIENT_VERSION) {
     return process.env.CODEX_CLIENT_VERSION;
@@ -58,6 +84,8 @@ export async function detectClientVersion(): Promise<string> {
 }
 
 export async function resolveConfig(): Promise<AppConfig> {
+  const defaultArtifactsDir = path.resolve(process.cwd(), "var");
+
   return {
     host: process.env.HOST ?? "127.0.0.1",
     port: envNumber("PORT", 8787),
@@ -73,5 +101,24 @@ export async function resolveConfig(): Promise<AppConfig> {
     defaultModel: process.env.CODEX_DEFAULT_MODEL ?? "gpt-5.4",
     proxyApiKey: process.env.PROXY_API_KEY,
     requestTimeoutMs: envNumber("REQUEST_TIMEOUT_MS", 120_000),
+    proxyLoggingEnabledDefault: envBoolean("PROXY_LOGGING_ENABLED", false),
+    proxyLogFilePath: expandHome(
+      process.env.PROXY_LOG_FILE_PATH ??
+        path.join(defaultArtifactsDir, "request-debug.jsonl"),
+    ),
+    proxyLogStatePath: expandHome(
+      process.env.PROXY_LOG_STATE_PATH ??
+        path.join(defaultArtifactsDir, "logging-state.json"),
+    ),
+    proxyLogReadLimitMax: envNumber("PROXY_LOG_READ_LIMIT_MAX", 200),
+    gpt54FastXhighAlias: {
+      alias:
+        process.env.CODEX_ALIAS_GPT54_FAST_XHIGH ??
+        "codex-gpt-5-4-fast-xhigh",
+      upstreamModel: "gpt-5.4",
+      reasoningEffort: "xhigh",
+      reasoningSummary: "auto",
+      serviceTier: "priority",
+    },
   };
 }

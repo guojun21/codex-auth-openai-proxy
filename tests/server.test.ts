@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import os from "node:os";
@@ -119,16 +118,39 @@ function sse(...events: unknown[]): string {
     .join("");
 }
 
-function makeConfig(authJsonPath: string, baseUrl: string, refreshUrl?: string): AppConfig {
+function makeConfig(
+  authJsonPath: string,
+  baseUrl: string,
+  options?: {
+    refreshUrl?: string;
+    proxyApiKey?: string;
+    proxyLoggingEnabledDefault?: boolean;
+    logReadLimitMax?: number;
+    alias?: string;
+  },
+): AppConfig {
+  const rootDir = path.dirname(authJsonPath);
   return {
     host: "127.0.0.1",
     port: 0,
     authJsonPath,
     upstreamBaseUrl: `${baseUrl}/backend-api/codex`,
-    refreshUrl: refreshUrl ?? `${baseUrl}/oauth/token`,
+    refreshUrl: options?.refreshUrl ?? `${baseUrl}/oauth/token`,
     clientVersion: "0.111.0",
     defaultModel: "gpt-5.4",
+    proxyApiKey: options?.proxyApiKey,
     requestTimeoutMs: 10_000,
+    proxyLoggingEnabledDefault: options?.proxyLoggingEnabledDefault ?? false,
+    proxyLogFilePath: path.join(rootDir, "request-debug.jsonl"),
+    proxyLogStatePath: path.join(rootDir, "logging-state.json"),
+    proxyLogReadLimitMax: options?.logReadLimitMax ?? 50,
+    gpt54FastXhighAlias: {
+      alias: options?.alias ?? "codex-gpt-5-4-fast-xhigh",
+      upstreamModel: "gpt-5.4",
+      reasoningEffort: "xhigh",
+      reasoningSummary: "auto",
+      serviceTier: "priority",
+    },
   };
 }
 
@@ -172,10 +194,89 @@ describe("codex-auth-openai-proxy", () => {
         object: "list",
         data: [
           {
+            id: "codex-gpt-5-4-fast-xhigh",
+            object: "model",
+            created: 0,
+            owned_by: "codex-auth-openai-proxy",
+          },
+          {
             id: "gpt-5.4",
             object: "model",
             created: 0,
             owned_by: "openai",
+          },
+        ],
+      });
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("exposes an alias for gpt-5.4 fast+xhigh and maps it back to the upstream model", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      expect(request.path).toBe("/backend-api/codex/responses");
+      const body = JSON.parse(request.bodyText) as Record<string, unknown>;
+      expect(body.model).toBe("gpt-5.4");
+      expect(body.reasoning).toEqual({
+        effort: "xhigh",
+        summary: "auto",
+      });
+      expect(body.service_tier).toBe("priority");
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.created",
+            response: {
+              id: "resp_alias_1",
+              created_at: 7,
+              model: "gpt-5.4",
+            },
+          },
+          {
+            type: "response.output_text.done",
+            text: "ALIAS_OK",
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_alias_1",
+              created_at: 7,
+              model: "gpt-5.4",
+              usage: {
+                input_tokens: 4,
+                output_tokens: 2,
+                total_tokens: 6,
+              },
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        payload: {
+          model: "codex-gpt-5-4-fast-xhigh",
+          messages: [{ role: "user", content: "hello" }],
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        id: "resp_alias_1",
+        model: "codex-gpt-5-4-fast-xhigh",
+        choices: [
+          {
+            message: {
+              content: "ALIAS_OK",
+            },
           },
         ],
       });
@@ -290,6 +391,15 @@ describe("codex-auth-openai-proxy", () => {
           content: [{ type: "input_text", text: "hello" }],
         },
       ]);
+      expect(body.reasoning).toEqual({
+        effort: "xhigh",
+        summary: "auto",
+      });
+      expect(body.service_tier).toBe("priority");
+      expect(body.text).toEqual({
+        verbosity: "high",
+      });
+      expect(body.include).toEqual(["reasoning.encrypted_content"]);
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end(
         sse(
@@ -333,6 +443,11 @@ describe("codex-auth-openai-proxy", () => {
         url: "/v1/chat/completions",
         payload: {
           model: "gpt-5.4",
+          reasoning_effort: "xhigh",
+          reasoning_summary: "auto",
+          service_tier: "priority",
+          verbosity: "high",
+          include: ["reasoning.encrypted_content"],
           messages: [
             { role: "system", content: "be terse" },
             { role: "user", content: "hello" },
@@ -360,6 +475,70 @@ describe("codex-auth-openai-proxy", () => {
           completion_tokens: 1,
           total_tokens: 5,
         },
+      });
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("accepts shorthand reasoning and verbosity fields for /v1/responses", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      const body = JSON.parse(request.bodyText) as Record<string, unknown>;
+      expect(body.reasoning).toEqual({
+        effort: "low",
+        summary: "auto",
+      });
+      expect(body.service_tier).toBe("flex");
+      expect(body.text).toEqual({
+        verbosity: "low",
+      });
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_short_1",
+              created_at: 5,
+              model: "gpt-5.4",
+              status: "completed",
+              output: [
+                {
+                  id: "msg_short_1",
+                  type: "message",
+                  role: "assistant",
+                  status: "completed",
+                  content: [{ type: "output_text", text: "FAST" }],
+                },
+              ],
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/responses",
+        payload: {
+          model: "gpt-5.4",
+          input: "hello",
+          reasoning_effort: "fast",
+          reasoning_summary: "auto",
+          service_tier: "flex",
+          verbosity: "low",
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        id: "resp_short_1",
+        status: "completed",
       });
       await app.close();
     } finally {
@@ -425,6 +604,193 @@ describe("codex-auth-openai-proxy", () => {
     }
   });
 
+  it("writes detailed logs only while logging is enabled and exposes them over admin APIs", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const proxyApiKey = "proxy-secret";
+    const upstream = await startMockServer((request, res) => {
+      if (request.path !== "/backend-api/codex/responses") {
+        res.writeHead(404).end();
+        return;
+      }
+
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.created",
+            response: {
+              id: "resp_log_1",
+              created_at: 12,
+              model: "gpt-5.4",
+            },
+          },
+          {
+            type: "response.output_text.delta",
+            delta: "LOG",
+          },
+          {
+            type: "response.output_text.done",
+            text: "LOG",
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_log_1",
+              created_at: 12,
+              model: "gpt-5.4",
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const config = makeConfig(authPath, upstream.baseUrl, {
+        proxyApiKey,
+      });
+      const app = await buildServer(config);
+      const authHeader = { authorization: `Bearer ${proxyApiKey}` };
+
+      const initialStatus = await app.inject({
+        method: "GET",
+        url: "/admin/logging",
+        headers: authHeader,
+      });
+      expect(initialStatus.statusCode).toBe(200);
+      expect(initialStatus.json()).toMatchObject({
+        enabled: false,
+      });
+
+      const enableResponse = await app.inject({
+        method: "POST",
+        url: "/admin/logging",
+        headers: authHeader,
+        payload: {
+          enabled: true,
+        },
+      });
+      expect(enableResponse.statusCode).toBe(200);
+      expect(enableResponse.json()).toMatchObject({
+        enabled: true,
+      });
+
+      const completionResponse = await app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        headers: {
+          ...authHeader,
+          "content-type": "application/json",
+        },
+        payload: {
+          model: "codex-gpt-5-4-fast-xhigh",
+          messages: [{ role: "user", content: "hello log" }],
+        },
+      });
+      expect(completionResponse.statusCode).toBe(200);
+
+      const logsResponse = await app.inject({
+        method: "GET",
+        url: "/admin/logs?limit=10",
+        headers: authHeader,
+      });
+      expect(logsResponse.statusCode).toBe(200);
+      const logsPayload = logsResponse.json() as {
+        enabled: boolean;
+        entries: Array<Record<string, unknown>>;
+      };
+      expect(logsPayload.enabled).toBe(true);
+      expect(logsPayload.entries.length).toBe(2);
+
+      const controlEntry = logsPayload.entries.find(
+        (entry) => entry.action === "logging.set_enabled",
+      );
+      expect(controlEntry).toBeTruthy();
+      expect(controlEntry).toMatchObject({
+        kind: "control",
+        enabled: true,
+      });
+
+      const requestEntry = logsPayload.entries.find(
+        (entry) => entry.action === "chat.completions.create",
+      );
+      expect(requestEntry).toBeTruthy();
+      expect(requestEntry).toMatchObject({
+        kind: "request",
+        method: "POST",
+        path: "/v1/chat/completions",
+        statusCode: 200,
+      });
+      expect(requestEntry?.request).toMatchObject({
+        headers: {
+          authorization: "[redacted]",
+        },
+        body: {
+          model: "codex-gpt-5-4-fast-xhigh",
+        },
+      });
+      expect(requestEntry?.upstream).toMatchObject({
+        request_body: {
+          model: "gpt-5.4",
+          reasoning: {
+            effort: "xhigh",
+            summary: "auto",
+          },
+          service_tier: "priority",
+        },
+        public_model: "codex-gpt-5-4-fast-xhigh",
+      });
+      expect((requestEntry?.upstream as Record<string, unknown>).sse_events).toBeInstanceOf(
+        Array,
+      );
+
+      const logFileBeforeDisable = await readFile(config.proxyLogFilePath, "utf8");
+
+      const disableResponse = await app.inject({
+        method: "POST",
+        url: "/admin/logging",
+        headers: authHeader,
+        payload: {
+          enabled: false,
+        },
+      });
+      expect(disableResponse.statusCode).toBe(200);
+      expect(disableResponse.json()).toMatchObject({
+        enabled: false,
+      });
+
+      const secondCompletionResponse = await app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        headers: {
+          ...authHeader,
+          "content-type": "application/json",
+        },
+        payload: {
+          model: "codex-gpt-5-4-fast-xhigh",
+          messages: [{ role: "user", content: "hello again" }],
+        },
+      });
+      expect(secondCompletionResponse.statusCode).toBe(200);
+
+      const logFileAfterDisable = await readFile(config.proxyLogFilePath, "utf8");
+      expect(logFileAfterDisable).toBe(logFileBeforeDisable);
+
+      const logsAfterDisable = await app.inject({
+        method: "GET",
+        url: "/admin/logs?limit=10",
+        headers: authHeader,
+      });
+      expect(logsAfterDisable.statusCode).toBe(200);
+      expect((logsAfterDisable.json() as { entries: unknown[] }).entries).toHaveLength(2);
+
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it("refreshes auth tokens and retries the upstream request after a 401", async () => {
     const tempDir = await makeTempDir();
     cleanupPaths.push(tempDir);
@@ -478,7 +844,9 @@ describe("codex-auth-openai-proxy", () => {
 
     try {
       const app = await buildServer(
-        makeConfig(authPath, upstream.baseUrl, `${upstream.baseUrl}/oauth/token`),
+        makeConfig(authPath, upstream.baseUrl, {
+          refreshUrl: `${upstream.baseUrl}/oauth/token`,
+        }),
       );
       const response = await app.inject({
         method: "GET",
