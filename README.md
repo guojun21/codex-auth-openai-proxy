@@ -40,17 +40,17 @@ Default server:
 
 - base URL: `http://127.0.0.1:8787/v1`
 - preset alias models:
-  - `codex-gpt-5-4-high`
+  - `codex-gpt-5-4-low-fast`
     - upstream model: `gpt-5.4`
-    - enforced defaults: `reasoning.effort=high`, `reasoning.summary=none`
+    - enforced defaults: `service_tier=priority`, `reasoning.effort=low`, `reasoning.summary=none`
+    - advertised context window: `260000`
+  - `codex-gpt-5-4-medium-fast`
+    - upstream model: `gpt-5.4`
+    - enforced defaults: `service_tier=priority`, `reasoning.effort=medium`, `reasoning.summary=none`
     - advertised context window: `260000`
   - `codex-gpt-5-4-high-fast`
     - upstream model: `gpt-5.4`
     - enforced defaults: `service_tier=priority`, `reasoning.effort=high`, `reasoning.summary=none`
-    - advertised context window: `260000`
-  - `codex-gpt-5-4-xhigh`
-    - upstream model: `gpt-5.4`
-    - enforced defaults: `reasoning.effort=xhigh`, `reasoning.summary=none`
     - advertised context window: `260000`
   - `codex-gpt-5-4-xhigh-fast`
     - upstream model: `gpt-5.4`
@@ -81,7 +81,7 @@ Alias model example:
 curl http://127.0.0.1:8787/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "codex-gpt-5-4-xhigh-fast",
+    "model": "codex-gpt-5-4-medium-fast",
     "messages": [{"role": "user", "content": "Reply with exactly ALIAS_OK"}]
   }'
 ```
@@ -116,9 +116,9 @@ Logging detail and retention:
 - `CODEX_REFRESH_URL`: default `https://auth.openai.com/oauth/token`
 - `CODEX_CLIENT_VERSION`: optional override for upstream `/models`
 - `CODEX_DEFAULT_MODEL`: default `gpt-5.4`
-- `CODEX_ALIAS_GPT54_HIGH`: default `codex-gpt-5-4-high`
+- `CODEX_ALIAS_GPT54_LOW_FAST`: default `codex-gpt-5-4-low-fast`
+- `CODEX_ALIAS_GPT54_MEDIUM_FAST`: default `codex-gpt-5-4-medium-fast`
 - `CODEX_ALIAS_GPT54_HIGH_FAST`: default `codex-gpt-5-4-high-fast`
-- `CODEX_ALIAS_GPT54_XHIGH`: default `codex-gpt-5-4-xhigh`
 - `CODEX_ALIAS_GPT54_XHIGH_FAST`: default `codex-gpt-5-4-xhigh-fast`
 - `CODEX_ALIAS_GPT54_FAST_XHIGH`: default `codex-gpt-5-4-fast-xhigh` (legacy compatibility alias)
 - `PROXY_API_KEY`: optional API key required by this proxy itself

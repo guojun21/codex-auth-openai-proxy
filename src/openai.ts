@@ -558,6 +558,7 @@ export function toModelsResponse(
 
   const syntheticModels = config.modelAliases
     .filter((alias) =>
+      alias.expose !== false &&
       models.some((model) => model.id === alias.upstreamModel),
     )
     .map((alias) => ({

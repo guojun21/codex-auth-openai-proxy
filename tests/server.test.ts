@@ -164,10 +164,19 @@ function makeConfig(
     modelAliases:
       options?.aliases ?? [
         {
-          alias: "codex-gpt-5-4-high",
+          alias: "codex-gpt-5-4-low-fast",
           upstreamModel: "gpt-5.4",
-          reasoningEffort: "high",
+          reasoningEffort: "low",
           reasoningSummary: "none",
+          serviceTier: "priority",
+          contextWindow: 260000,
+        },
+        {
+          alias: "codex-gpt-5-4-medium-fast",
+          upstreamModel: "gpt-5.4",
+          reasoningEffort: "medium",
+          reasoningSummary: "none",
+          serviceTier: "priority",
           contextWindow: 260000,
         },
         {
@@ -176,13 +185,6 @@ function makeConfig(
           reasoningEffort: "high",
           reasoningSummary: "none",
           serviceTier: "priority",
-          contextWindow: 260000,
-        },
-        {
-          alias: "codex-gpt-5-4-xhigh",
-          upstreamModel: "gpt-5.4",
-          reasoningEffort: "xhigh",
-          reasoningSummary: "none",
           contextWindow: 260000,
         },
         {
@@ -200,6 +202,16 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          expose: false,
+        },
+        {
+          alias: "codex-gpt-5-4",
+          upstreamModel: "gpt-5.4",
+          reasoningEffort: "xhigh",
+          reasoningSummary: "none",
+          serviceTier: "priority",
+          contextWindow: 260000,
+          expose: false,
         },
       ],
   };
@@ -245,7 +257,14 @@ describe("codex-auth-openai-proxy", () => {
         object: "list",
         data: [
           {
-            id: "codex-gpt-5-4-high",
+            id: "codex-gpt-5-4-low-fast",
+            object: "model",
+            created: 0,
+            owned_by: "codex-auth-openai-proxy",
+            context_window: 260000,
+          },
+          {
+            id: "codex-gpt-5-4-medium-fast",
             object: "model",
             created: 0,
             owned_by: "codex-auth-openai-proxy",
@@ -259,21 +278,7 @@ describe("codex-auth-openai-proxy", () => {
             context_window: 260000,
           },
           {
-            id: "codex-gpt-5-4-xhigh",
-            object: "model",
-            created: 0,
-            owned_by: "codex-auth-openai-proxy",
-            context_window: 260000,
-          },
-          {
             id: "codex-gpt-5-4-xhigh-fast",
-            object: "model",
-            created: 0,
-            owned_by: "codex-auth-openai-proxy",
-            context_window: 260000,
-          },
-          {
-            id: "codex-gpt-5-4-fast-xhigh",
             object: "model",
             created: 0,
             owned_by: "codex-auth-openai-proxy",
@@ -294,7 +299,7 @@ describe("codex-auth-openai-proxy", () => {
     }
   });
 
-  it("exposes an alias for gpt-5.4 fast+xhigh and maps it back to the upstream model", async () => {
+  it("exposes a fast preset alias for gpt-5.4 and maps it back to the upstream model", async () => {
     const tempDir = await makeTempDir();
     cleanupPaths.push(tempDir);
     const authPath = await writeAuthFile(tempDir);
@@ -303,7 +308,7 @@ describe("codex-auth-openai-proxy", () => {
       const body = JSON.parse(request.bodyText) as Record<string, unknown>;
       expect(body.model).toBe("gpt-5.4");
       expect(body.reasoning).toEqual({
-        effort: "xhigh",
+        effort: "medium",
         summary: "none",
       });
       expect(body.service_tier).toBe("priority");
@@ -345,18 +350,91 @@ describe("codex-auth-openai-proxy", () => {
         method: "POST",
         url: "/v1/chat/completions",
         payload: {
-          model: "codex-gpt-5-4-fast-xhigh",
+          model: "codex-gpt-5-4-medium-fast",
           messages: [{ role: "user", content: "hello" }],
         },
       });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
         id: "resp_alias_1",
-        model: "codex-gpt-5-4-fast-xhigh",
+        model: "codex-gpt-5-4-medium-fast",
         choices: [
           {
             message: {
               content: "ALIAS_OK",
+            },
+          },
+        ],
+      });
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("keeps the plain codex-gpt-5-4 compatibility alias working without exposing it in /v1/models", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      expect(request.path).toBe("/backend-api/codex/responses");
+      const body = JSON.parse(request.bodyText) as Record<string, unknown>;
+      expect(body.model).toBe("gpt-5.4");
+      expect(body.reasoning).toEqual({
+        effort: "xhigh",
+        summary: "none",
+      });
+      expect(body.service_tier).toBe("priority");
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.created",
+            response: {
+              id: "resp_alias_compat_1",
+              created_at: 8,
+              model: "gpt-5.4",
+            },
+          },
+          {
+            type: "response.output_text.done",
+            text: "COMPAT_OK",
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_alias_compat_1",
+              created_at: 8,
+              model: "gpt-5.4",
+              usage: {
+                input_tokens: 5,
+                output_tokens: 2,
+                total_tokens: 7,
+              },
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        payload: {
+          model: "codex-gpt-5-4",
+          messages: [{ role: "user", content: "hello" }],
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        id: "resp_alias_compat_1",
+        model: "codex-gpt-5-4",
+        choices: [
+          {
+            message: {
+              content: "COMPAT_OK",
             },
           },
         ],

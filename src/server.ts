@@ -240,14 +240,16 @@ export async function buildServer(config: AppConfig) {
       account_id: auth.accountId,
       client_version: config.clientVersion,
       logging_enabled: proxyLogger.isEnabled(),
-      model_aliases: config.modelAliases.map((alias) => ({
-        alias: alias.alias,
-        upstream_model: alias.upstreamModel,
-        reasoning_effort: alias.reasoningEffort ?? null,
-        reasoning_summary: alias.reasoningSummary ?? null,
-        service_tier: alias.serviceTier ?? null,
-        context_window: alias.contextWindow ?? null,
-      })),
+      model_aliases: config.modelAliases
+        .filter((alias) => alias.expose !== false)
+        .map((alias) => ({
+          alias: alias.alias,
+          upstream_model: alias.upstreamModel,
+          reasoning_effort: alias.reasoningEffort ?? null,
+          reasoning_summary: alias.reasoningSummary ?? null,
+          service_tier: alias.serviceTier ?? null,
+          context_window: alias.contextWindow ?? null,
+        })),
     };
   });
 

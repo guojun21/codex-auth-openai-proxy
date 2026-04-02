@@ -27,6 +27,7 @@ export interface AppConfig {
     reasoningSummary?: string;
     serviceTier?: string;
     contextWindow?: number;
+    expose?: boolean;
   }>;
 }
 
@@ -116,10 +117,22 @@ export async function resolveConfig(): Promise<AppConfig> {
     proxyLogFileMaxBytes: envNumber("PROXY_LOG_FILE_MAX_BYTES", 10 * 1024 * 1024),
     modelAliases: [
       {
-        alias: process.env.CODEX_ALIAS_GPT54_HIGH ?? "codex-gpt-5-4-high",
+        alias:
+          process.env.CODEX_ALIAS_GPT54_LOW_FAST ?? "codex-gpt-5-4-low-fast",
         upstreamModel: "gpt-5.4",
-        reasoningEffort: "high",
+        reasoningEffort: "low",
         reasoningSummary: "none",
+        serviceTier: "priority",
+        contextWindow: 260_000,
+      },
+      {
+        alias:
+          process.env.CODEX_ALIAS_GPT54_MEDIUM_FAST ??
+          "codex-gpt-5-4-medium-fast",
+        upstreamModel: "gpt-5.4",
+        reasoningEffort: "medium",
+        reasoningSummary: "none",
+        serviceTier: "priority",
         contextWindow: 260_000,
       },
       {
@@ -129,13 +142,6 @@ export async function resolveConfig(): Promise<AppConfig> {
         reasoningEffort: "high",
         reasoningSummary: "none",
         serviceTier: "priority",
-        contextWindow: 260_000,
-      },
-      {
-        alias: process.env.CODEX_ALIAS_GPT54_XHIGH ?? "codex-gpt-5-4-xhigh",
-        upstreamModel: "gpt-5.4",
-        reasoningEffort: "xhigh",
-        reasoningSummary: "none",
         contextWindow: 260_000,
       },
       {
@@ -156,6 +162,16 @@ export async function resolveConfig(): Promise<AppConfig> {
         reasoningSummary: "none",
         serviceTier: "priority",
         contextWindow: 260_000,
+        expose: false,
+      },
+      {
+        alias: process.env.CODEX_ALIAS_GPT54_COMPAT ?? "codex-gpt-5-4",
+        upstreamModel: "gpt-5.4",
+        reasoningEffort: "xhigh",
+        reasoningSummary: "none",
+        serviceTier: "priority",
+        contextWindow: 260_000,
+        expose: false,
       },
     ],
   };
