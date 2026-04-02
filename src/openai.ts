@@ -264,6 +264,23 @@ function extractMessageRecords(items: unknown[]): JsonMap[] {
   });
 }
 
+function buildChatInputFromExplicitItems(items: unknown[]): unknown[] {
+  return items.filter((item) => {
+    if (!item || typeof item !== "object") {
+      return false;
+    }
+
+    const record = item as JsonMap;
+    if (record.type === "message") {
+      const role = ensureText(record.role);
+      return role === "user" || role === "assistant";
+    }
+
+    const type = ensureText(record.type);
+    return type === "function_call" || type === "function_call_output";
+  });
+}
+
 export function buildUpstreamResponsesRequest(
   body: JsonMap,
   config: AppConfig,
@@ -335,12 +352,8 @@ export function buildUpstreamChatRequest(
   const instructionSource =
     normalizedExplicitMessages.length > 0 ? normalizedExplicitMessages : messages;
   const input =
-    normalizedExplicitMessages.length > 0
-      ? normalizedExplicitMessages
-          .filter((message) => {
-            const role = ensureText(message.role);
-            return role === "user" || role === "assistant";
-          })
+    normalizedExplicitInput.length > 0
+      ? buildChatInputFromExplicitItems(normalizedExplicitInput)
       : messages
           .filter((message) => {
             const role = ensureText(message.role);

@@ -573,6 +573,122 @@ describe("codex-auth-openai-proxy", () => {
     }
   });
 
+  it("preserves function_call and function_call_output items on chat completions follow-up requests", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      const body = JSON.parse(request.bodyText) as Record<string, unknown>;
+      expect(String(body.instructions)).toContain("[system]");
+      expect(body.input).toEqual([
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "plan this" }],
+        },
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "input_text", text: "I will inspect the repo first." }],
+        },
+        {
+          type: "function_call",
+          call_id: "call_1",
+          name: "ReadFile",
+          arguments: "{\"path\":\"/tmp/a.md\"}",
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_1",
+          output: "file contents",
+        },
+      ]);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.output_text.done",
+            text: "FOLLOW_UP_OK",
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_follow_up_1",
+              created_at: 500,
+              model: "gpt-5.4",
+              usage: {
+                input_tokens: 8,
+                output_tokens: 2,
+                total_tokens: 10,
+              },
+              output: [
+                {
+                  id: "msg_follow_up_1",
+                  type: "message",
+                  role: "assistant",
+                  status: "completed",
+                  content: [{ type: "output_text", text: "FOLLOW_UP_OK" }],
+                },
+              ],
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        payload: {
+          model: "gpt-5.4",
+          input: [
+            { role: "system", content: "be terse" },
+            { role: "user", content: "plan this" },
+            { role: "assistant", content: "I will inspect the repo first." },
+            {
+              type: "function_call",
+              call_id: "call_1",
+              name: "ReadFile",
+              arguments: "{\"path\":\"/tmp/a.md\"}",
+            },
+            {
+              type: "function_call_output",
+              call_id: "call_1",
+              output: "file contents",
+            },
+          ],
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        id: "resp_follow_up_1",
+        object: "chat.completion",
+        created: 500,
+        model: "gpt-5.4",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "FOLLOW_UP_OK",
+            },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 8,
+          completion_tokens: 2,
+          total_tokens: 10,
+        },
+      });
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it("accepts shorthand reasoning and verbosity fields for /v1/responses", async () => {
     const tempDir = await makeTempDir();
     cleanupPaths.push(tempDir);
