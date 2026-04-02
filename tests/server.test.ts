@@ -1092,8 +1092,115 @@ describe("codex-auth-openai-proxy", () => {
       const body = await response.text();
       expect(response.status).toBe(200);
       expect(body).toContain('"content":"Hi"');
+      expect(body).toContain('"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10},"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]');
       expect(body).toContain('"choices":[]');
       expect(body).toContain('"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}');
+      expect(body).toContain("data: [DONE]");
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("includes usage on the tool-call finish chunk when include_usage is requested", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      expect(request.path).toBe("/backend-api/codex/responses");
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.created",
+            response: {
+              id: "resp_stream_tool_usage_1",
+              created_at: 111,
+              model: "gpt-5.4",
+            },
+          },
+          {
+            type: "response.output_item.added",
+            output_index: 0,
+            item: {
+              id: "fc_usage_1",
+              type: "function_call",
+              name: "Shell",
+              call_id: "call_usage_1",
+              status: "in_progress",
+              arguments: "",
+            },
+          },
+          {
+            type: "response.function_call_arguments.delta",
+            item_id: "fc_usage_1",
+            output_index: 0,
+            delta: "{\"command\":\"pwd\"}",
+          },
+          {
+            type: "response.output_item.done",
+            output_index: 0,
+            item: {
+              id: "fc_usage_1",
+              type: "function_call",
+              name: "Shell",
+              call_id: "call_usage_1",
+              status: "completed",
+              arguments: "{\"command\":\"pwd\"}",
+            },
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_stream_tool_usage_1",
+              created_at: 111,
+              model: "gpt-5.4",
+              usage: {
+                input_tokens: 20,
+                output_tokens: 4,
+                total_tokens: 24,
+              },
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const listen = await app.listen({ host: "127.0.0.1", port: 0 });
+      const response = await fetch(`${listen}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "codex-gpt-5-4-low-fast",
+          stream: true,
+          stream_options: { include_usage: true },
+          messages: [{ role: "user", content: "hello" }],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "Shell",
+                description: "Run shell",
+                parameters: {
+                  type: "object",
+                  properties: {
+                    command: { type: "string" },
+                  },
+                  required: ["command"],
+                },
+              },
+            },
+          ],
+        }),
+      });
+      const body = await response.text();
+      expect(response.status).toBe(200);
+      expect(body).toContain('"usage":{"prompt_tokens":20,"completion_tokens":4,"total_tokens":24},"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]');
+      expect(body).toContain('"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":4,"total_tokens":24}');
       expect(body).toContain("data: [DONE]");
       await app.close();
     } finally {

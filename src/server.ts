@@ -741,13 +741,18 @@ export async function buildServer(config: AppConfig) {
         typeof requestBody.stream_options === "object" &&
         Boolean((requestBody.stream_options as JsonMap).include_usage);
 
-      const writeChunk = (delta: JsonMap, finish: string | null = null) => {
+      const writeChunk = (
+        delta: JsonMap,
+        finish: string | null = null,
+        extras?: JsonMap,
+      ) => {
         reply.raw.write(
           formatSseData({
             id: responseId,
             object: "chat.completion.chunk",
             created,
             model,
+            ...(extras ?? {}),
             choices: [
               {
                 index: 0,
@@ -915,12 +920,12 @@ export async function buildServer(config: AppConfig) {
             event.response && typeof event.response === "object"
               ? (event.response as JsonMap)
               : null;
+          const usage = toChatCompletionUsage(completedResponse);
           if (!sentRole) {
             writeChunk({ role: "assistant" });
           }
-          writeChunk({}, finishReason);
+          writeChunk({}, finishReason, includeUsage && usage ? { usage } : undefined);
           if (includeUsage) {
-            const usage = toChatCompletionUsage(completedResponse);
             if (usage) {
               reply.raw.write(
                 formatSseData({
