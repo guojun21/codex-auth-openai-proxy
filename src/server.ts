@@ -9,6 +9,7 @@ import {
   buildUpstreamResponsesRequest,
   parseUpstreamResponsePayload,
   toChatCompletionResponse,
+  toChatCompletionUsage,
   toModelsResponse,
   type JsonMap,
 } from "./openai.js";
@@ -716,6 +717,10 @@ export async function buildServer(config: AppConfig) {
       let created = Math.floor(Date.now() / 1000);
       let toolIndex = 0;
       let finishReason: "stop" | "tool_calls" = "stop";
+      const includeUsage =
+        Boolean(requestBody.stream_options) &&
+        typeof requestBody.stream_options === "object" &&
+        Boolean((requestBody.stream_options as JsonMap).include_usage);
 
       const writeChunk = (delta: JsonMap, finish: string | null = null) => {
         reply.raw.write(
@@ -797,10 +802,29 @@ export async function buildServer(config: AppConfig) {
         }
 
         if (type === "response.completed") {
+          const completedResponse =
+            event.response && typeof event.response === "object"
+              ? (event.response as JsonMap)
+              : null;
           if (!sentRole) {
             writeChunk({ role: "assistant" });
           }
           writeChunk({}, finishReason);
+          if (includeUsage) {
+            const usage = toChatCompletionUsage(completedResponse);
+            if (usage) {
+              reply.raw.write(
+                formatSseData({
+                  id: responseId,
+                  object: "chat.completion.chunk",
+                  created,
+                  model,
+                  choices: [],
+                  usage,
+                }),
+              );
+            }
+          }
           reply.raw.write("data: [DONE]\n\n");
           reply.raw.end();
           if (proxyLogger.isEnabled()) {

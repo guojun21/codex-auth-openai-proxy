@@ -519,7 +519,7 @@ export function toModelsResponse(
   };
 }
 
-function usageFromResponse(response: JsonMap | null): JsonMap | undefined {
+export function toChatCompletionUsage(response: JsonMap | null): JsonMap | undefined {
   const usage = response?.usage;
   if (!usage || typeof usage !== "object") {
     return undefined;
@@ -569,7 +569,7 @@ export function toChatCompletionResponse(parsed: ParsedUpstreamResponse): JsonMa
         finish_reason: parsed.toolCalls.length > 0 ? "tool_calls" : "stop",
       },
     ],
-    usage: usageFromResponse(parsed.response),
+    usage: toChatCompletionUsage(parsed.response),
   };
 }
 

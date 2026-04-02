@@ -764,6 +764,71 @@ describe("codex-auth-openai-proxy", () => {
     }
   });
 
+  it("emits a final usage chunk for streamed chat completions when include_usage is requested", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      expect(request.path).toBe("/backend-api/codex/responses");
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.created",
+            response: {
+              id: "resp_stream_usage_1",
+              created_at: 100,
+              model: "gpt-5.4",
+            },
+          },
+          {
+            type: "response.output_text.delta",
+            delta: "Hi",
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_stream_usage_1",
+              created_at: 100,
+              model: "gpt-5.4",
+              usage: {
+                input_tokens: 7,
+                output_tokens: 3,
+                total_tokens: 10,
+              },
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const listen = await app.listen({ host: "127.0.0.1", port: 0 });
+      const response = await fetch(`${listen}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-5.4",
+          stream: true,
+          stream_options: { include_usage: true },
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      });
+      const body = await response.text();
+      expect(response.status).toBe(200);
+      expect(body).toContain('"content":"Hi"');
+      expect(body).toContain('"choices":[]');
+      expect(body).toContain('"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}');
+      expect(body).toContain("data: [DONE]");
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it("writes detailed logs only while logging is enabled and exposes them over admin APIs", async () => {
     const tempDir = await makeTempDir();
     cleanupPaths.push(tempDir);
