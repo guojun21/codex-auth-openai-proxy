@@ -589,7 +589,7 @@ describe("codex-auth-openai-proxy", () => {
         {
           type: "message",
           role: "assistant",
-          content: [{ type: "input_text", text: "I will inspect the repo first." }],
+          content: [{ type: "output_text", text: "I will inspect the repo first." }],
         },
         {
           type: "function_call",

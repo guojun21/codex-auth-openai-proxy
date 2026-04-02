@@ -111,11 +111,14 @@ function normalizeText(body: JsonMap): JsonMap | undefined {
   return { verbosity };
 }
 
-function normalizeInputTextContent(
+function normalizeMessageContent(
+  role: string,
   content: unknown,
 ): Array<Record<string, unknown>> {
+  const textType = role === "assistant" ? "output_text" : "input_text";
+
   if (typeof content === "string") {
-    return [{ type: "input_text", text: content }];
+    return [{ type: textType, text: content }];
   }
 
   if (!Array.isArray(content)) {
@@ -132,14 +135,28 @@ function normalizeInputTextContent(
     if (type === "input_text") {
       const text = ensureText(record.text);
       if (text) {
-        parts.push({ type: "input_text", text });
+        parts.push({ type: textType, text });
       }
       continue;
     }
     if (type === "text") {
       const text = ensureText(record.text);
       if (text) {
-        parts.push({ type: "input_text", text });
+        parts.push({ type: textType, text });
+      }
+      continue;
+    }
+    if (type === "output_text") {
+      const text = ensureText(record.text);
+      if (text) {
+        parts.push({ type: textType, text });
+      }
+      continue;
+    }
+    if (role === "assistant" && type === "refusal") {
+      const text = ensureText(record.text);
+      if (text) {
+        parts.push({ type: "refusal", text });
       }
       continue;
     }
@@ -180,7 +197,7 @@ function buildInputMessage(
     return null;
   }
 
-  const parts = normalizeInputTextContent(content);
+  const parts = normalizeMessageContent(normalizedRole, content);
   if (parts.length === 0) {
     return null;
   }
@@ -200,7 +217,7 @@ function extractInstructionTexts(messages: JsonMap[]): string {
     if (role !== "system" && role !== "developer") {
       continue;
     }
-    const textParts = normalizeInputTextContent(message.content)
+    const textParts = normalizeMessageContent(role, message.content)
       .map((part) => ensureText(part.text))
       .filter((value): value is string => Boolean(value));
     if (textParts.length > 0) {
