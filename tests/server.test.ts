@@ -1482,6 +1482,163 @@ describe("codex-auth-openai-proxy", () => {
     }
   });
 
+  it("streams custom tool calls incrementally for chat completions", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const fullInput = [
+      "*** Begin Patch",
+      "*** Update File: /tmp/demo.txt",
+      "@@",
+      "-old",
+      "+new",
+      "*** End Patch",
+      "",
+    ].join("\n");
+    const firstDelta = fullInput.slice(0, 18);
+    const secondDelta = fullInput.slice(18, 61);
+    const thirdDelta = fullInput.slice(61);
+    const upstream = await startMockServer((request, res) => {
+      expect(request.path).toBe("/backend-api/codex/responses");
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.created",
+            response: {
+              id: "resp_stream_custom_tool_1",
+              created_at: 201,
+              model: "gpt-5.4",
+            },
+          },
+          {
+            type: "response.output_item.added",
+            output_index: 0,
+            item: {
+              id: "ctc_1",
+              type: "custom_tool_call",
+              name: "ApplyPatch",
+              call_id: "call_patch_1",
+              status: "in_progress",
+              input: "",
+            },
+          },
+          {
+            type: "response.custom_tool_call_input.delta",
+            item_id: "ctc_1",
+            output_index: 0,
+            delta: firstDelta,
+          },
+          {
+            type: "response.custom_tool_call_input.delta",
+            item_id: "ctc_1",
+            output_index: 0,
+            delta: secondDelta,
+          },
+          {
+            type: "response.custom_tool_call_input.delta",
+            item_id: "ctc_1",
+            output_index: 0,
+            delta: thirdDelta,
+          },
+          {
+            type: "response.custom_tool_call_input.done",
+            item_id: "ctc_1",
+            output_index: 0,
+            input: fullInput,
+          },
+          {
+            type: "response.output_item.done",
+            output_index: 0,
+            item: {
+              id: "ctc_1",
+              type: "custom_tool_call",
+              name: "ApplyPatch",
+              call_id: "call_patch_1",
+              status: "completed",
+              input: fullInput,
+            },
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_stream_custom_tool_1",
+              created_at: 201,
+              model: "gpt-5.4",
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const listen = await app.listen({ host: "127.0.0.1", port: 0 });
+      const response = await fetch(`${listen}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "codexproxy-gpt-5.4-xhigh-fast",
+          stream: true,
+          messages: [{ role: "user", content: "patch it" }],
+        }),
+      });
+      const body = await response.text();
+      expect(response.status).toBe(200);
+      expect(body).toContain("data: [DONE]");
+
+      const chunks = parseSsePayload(body);
+      const toolCallChunks = chunks.filter((chunk) => {
+        const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+        const delta =
+          choices.length > 0 && choices[0] && typeof choices[0] === "object"
+            ? (choices[0] as Record<string, unknown>).delta
+            : null;
+        return Boolean(
+          delta &&
+            typeof delta === "object" &&
+            Array.isArray((delta as Record<string, unknown>).tool_calls),
+        );
+      });
+
+      expect(toolCallChunks.length).toBeGreaterThanOrEqual(4);
+      const firstToolCall = (
+        (((toolCallChunks[0].choices as Array<Record<string, unknown>>)[0].delta as Record<
+          string,
+          unknown
+        >).tool_calls as Array<Record<string, unknown>>)[0]
+      );
+      expect(firstToolCall).toMatchObject({
+        index: 0,
+        id: "call_patch_1",
+        type: "function",
+        function: {
+          name: "ApplyPatch",
+          arguments: "",
+        },
+      });
+
+      const reconstructedInput = toolCallChunks
+        .slice(1)
+        .map((chunk) => {
+          const delta = ((chunk.choices as Array<Record<string, unknown>>)[0]
+            .delta ?? {}) as Record<string, unknown>;
+          const toolCalls = (delta.tool_calls ?? []) as Array<Record<string, unknown>>;
+          const call = toolCalls[0] ?? {};
+          const fn = (call.function ?? {}) as Record<string, unknown>;
+          return typeof fn.arguments === "string" ? fn.arguments : "";
+        })
+        .join("");
+
+      expect(reconstructedInput).toBe(fullInput);
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it("protects routes with API keys and accepts both Bearer and X-API-Key headers", async () => {
     const tempDir = await makeTempDir();
     cleanupPaths.push(tempDir);

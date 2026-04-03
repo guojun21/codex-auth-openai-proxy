@@ -924,11 +924,11 @@ export async function buildServer(config: AppConfig) {
 
         if (type === "response.output_item.added" && event.item && typeof event.item === "object") {
           const item = event.item as JsonMap;
-          if (item.type === "function_call") {
+          if (item.type === "function_call" || item.type === "custom_tool_call") {
             const itemId = String(item.id ?? `tool_${toolIndex}`);
             const meta = ensureToolCallMeta(itemId, {
               callId: String(item.call_id ?? `call_${toolIndex}`),
-              name: String(item.name ?? "function"),
+              name: String(item.name ?? (item.type === "custom_tool_call" ? "tool" : "function")),
             });
             announceToolCall(meta);
           }
@@ -953,18 +953,40 @@ export async function buildServer(config: AppConfig) {
           continue;
         }
 
+        if (type === "response.custom_tool_call_input.delta") {
+          const itemId = String(event.item_id ?? `tool_${toolIndex}`);
+          const meta = ensureToolCallMeta(itemId);
+          announceToolCall(meta);
+          meta.sawArgumentDelta = true;
+          writeChunk({
+            tool_calls: [
+              {
+                index: meta.index,
+                function: {
+                  arguments: String(event.delta ?? ""),
+                },
+              },
+            ],
+          });
+          continue;
+        }
+
         if (type === "response.output_item.done" && event.item && typeof event.item === "object") {
           const item = event.item as JsonMap;
-          if (item.type === "function_call") {
+          if (item.type === "function_call" || item.type === "custom_tool_call") {
             const itemId = String(item.id ?? `tool_${toolIndex}`);
             const meta = ensureToolCallMeta(itemId, {
               callId: String(item.call_id ?? `call_${toolIndex}`),
-              name: String(item.name ?? "function"),
+              name: String(item.name ?? (item.type === "custom_tool_call" ? "tool" : "function")),
             });
             const fullArguments =
-              typeof item.arguments === "string"
-                ? item.arguments
-                : JSON.stringify(item.arguments ?? {});
+              item.type === "custom_tool_call"
+                ? (typeof item.input === "string"
+                    ? item.input
+                    : JSON.stringify(item.input ?? {}))
+                : (typeof item.arguments === "string"
+                    ? item.arguments
+                    : JSON.stringify(item.arguments ?? {}));
             announceToolCall(meta);
             if (!meta.sawArgumentDelta && fullArguments) {
               writeChunk({

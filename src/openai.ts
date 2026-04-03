@@ -485,6 +485,17 @@ export function parseUpstreamResponsePayload(events: Array<JsonMap | null>): Par
               : JSON.stringify(item.arguments ?? {}),
         });
       }
+      if (ensureText(item.type) === "custom_tool_call") {
+        const callId = ensureText(item.call_id) ?? randomUUID();
+        toolCalls.set(callId, {
+          callId,
+          name: ensureText(item.name) ?? "tool",
+          arguments:
+            typeof item.input === "string"
+              ? item.input
+              : JSON.stringify(item.input ?? {}),
+        });
+      }
       if (ensureText(item.type) === "message" && !textFromDone && Array.isArray(item.content)) {
         const outputText = item.content
           .filter((part) => part && typeof part === "object")
