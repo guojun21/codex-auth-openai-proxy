@@ -104,6 +104,15 @@ function resolveRequestedModel(
       contextWindow: matchedAlias.contextWindow,
     };
   }
+
+  if (requestedModel.startsWith(config.modelAliasPrefix)) {
+    return {
+      publicModel: requestedModel,
+      upstreamModel: requestedModel.slice(config.modelAliasPrefix.length),
+      aliasApplied: true,
+    };
+  }
+
   return {
     publicModel: requestedModel,
     upstreamModel: requestedModel,
@@ -538,7 +547,7 @@ export function toModelsResponse(
   upstreamModels: Array<JsonMap>,
   config: AppConfig,
 ): JsonMap {
-  const models = upstreamModels
+  const upstreamVisibleModels = upstreamModels
     .filter((model) => {
       const visibility = ensureText(model.visibility);
       return visibility === null || visibility === "list";
@@ -563,7 +572,7 @@ export function toModelsResponse(
   const syntheticModels = config.modelAliases
     .filter((alias) =>
       alias.expose !== false &&
-      models.some((model) => model.id === alias.upstreamModel),
+      upstreamVisibleModels.some((model) => model.id === alias.upstreamModel),
     )
     .map((alias) => ({
       id: alias.alias,
@@ -573,9 +582,33 @@ export function toModelsResponse(
       ...(alias.contextWindow ? { context_window: alias.contextWindow } : {}),
     }));
 
+  const prefixedModels = upstreamVisibleModels.map((model) => ({
+    id: `${config.modelAliasPrefix}${String(model.id)}`,
+    object: "model",
+    created: 0,
+    owned_by: "codex-auth-openai-proxy",
+    ...(typeof model.context_window === "number"
+      ? { context_window: model.context_window }
+      : {}),
+  }));
+
+  const seen = new Set<string>();
+  const data = [
+    ...syntheticModels,
+    ...prefixedModels,
+    ...(config.exposeRawUpstreamModels ? upstreamVisibleModels : []),
+  ].filter((model) => {
+    const id = String(model.id);
+    if (seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+    return true;
+  });
+
   return {
     object: "list",
-    data: [...syntheticModels, ...models],
+    data,
   };
 }
 

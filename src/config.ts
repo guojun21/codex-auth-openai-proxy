@@ -13,6 +13,8 @@ export interface AppConfig {
   refreshUrl: string;
   clientVersion: string;
   defaultModel: string;
+  modelAliasPrefix: string;
+  exposeRawUpstreamModels: boolean;
   proxyApiKey?: string;
   requestTimeoutMs: number;
   proxyLoggingEnabledDefault: boolean;
@@ -102,6 +104,8 @@ export async function resolveConfig(): Promise<AppConfig> {
       process.env.CODEX_REFRESH_URL ?? "https://auth.openai.com/oauth/token",
     clientVersion: await detectClientVersion(),
     defaultModel: process.env.CODEX_DEFAULT_MODEL ?? "gpt-5.4",
+    modelAliasPrefix: process.env.CODEX_MODEL_ALIAS_PREFIX ?? "codexproxy-",
+    exposeRawUpstreamModels: envBoolean("CODEX_EXPOSE_RAW_UPSTREAM_MODELS", false),
     proxyApiKey: process.env.PROXY_API_KEY,
     requestTimeoutMs: envNumber("REQUEST_TIMEOUT_MS", 120_000),
     proxyLoggingEnabledDefault: envBoolean("PROXY_LOGGING_ENABLED", false),
@@ -118,7 +122,7 @@ export async function resolveConfig(): Promise<AppConfig> {
     modelAliases: [
       {
         alias:
-          process.env.CODEX_ALIAS_GPT54_LOW_FAST ?? "codex-gpt-5-4-low-fast",
+          process.env.CODEX_ALIAS_GPT54_LOW_FAST ?? "codexproxy-gpt-5.4-low-fast",
         upstreamModel: "gpt-5.4",
         reasoningEffort: "low",
         reasoningSummary: "none",
@@ -128,7 +132,7 @@ export async function resolveConfig(): Promise<AppConfig> {
       {
         alias:
           process.env.CODEX_ALIAS_GPT54_MEDIUM_FAST ??
-          "codex-gpt-5-4-medium-fast",
+          "codexproxy-gpt-5.4-medium-fast",
         upstreamModel: "gpt-5.4",
         reasoningEffort: "medium",
         reasoningSummary: "none",
@@ -137,7 +141,7 @@ export async function resolveConfig(): Promise<AppConfig> {
       },
       {
         alias:
-          process.env.CODEX_ALIAS_GPT54_HIGH_FAST ?? "codex-gpt-5-4-high-fast",
+          process.env.CODEX_ALIAS_GPT54_HIGH_FAST ?? "codexproxy-gpt-5.4-high-fast",
         upstreamModel: "gpt-5.4",
         reasoningEffort: "high",
         reasoningSummary: "none",
@@ -146,12 +150,48 @@ export async function resolveConfig(): Promise<AppConfig> {
       },
       {
         alias:
-          process.env.CODEX_ALIAS_GPT54_XHIGH_FAST ?? "codex-gpt-5-4-xhigh-fast",
+          process.env.CODEX_ALIAS_GPT54_XHIGH_FAST ?? "codexproxy-gpt-5.4-xhigh-fast",
         upstreamModel: "gpt-5.4",
         reasoningEffort: "xhigh",
         reasoningSummary: "none",
         serviceTier: "priority",
         contextWindow: 260_000,
+      },
+      {
+        alias: "codex-gpt-5-4-low-fast",
+        upstreamModel: "gpt-5.4",
+        reasoningEffort: "low",
+        reasoningSummary: "none",
+        serviceTier: "priority",
+        contextWindow: 260_000,
+        expose: false,
+      },
+      {
+        alias: "codex-gpt-5-4-medium-fast",
+        upstreamModel: "gpt-5.4",
+        reasoningEffort: "medium",
+        reasoningSummary: "none",
+        serviceTier: "priority",
+        contextWindow: 260_000,
+        expose: false,
+      },
+      {
+        alias: "codex-gpt-5-4-high-fast",
+        upstreamModel: "gpt-5.4",
+        reasoningEffort: "high",
+        reasoningSummary: "none",
+        serviceTier: "priority",
+        contextWindow: 260_000,
+        expose: false,
+      },
+      {
+        alias: "codex-gpt-5-4-xhigh-fast",
+        upstreamModel: "gpt-5.4",
+        reasoningEffort: "xhigh",
+        reasoningSummary: "none",
+        serviceTier: "priority",
+        contextWindow: 260_000,
+        expose: false,
       },
       {
         alias:

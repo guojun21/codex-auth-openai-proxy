@@ -154,6 +154,8 @@ function makeConfig(
     refreshUrl: options?.refreshUrl ?? `${baseUrl}/oauth/token`,
     clientVersion: "0.111.0",
     defaultModel: "gpt-5.4",
+    modelAliasPrefix: "codexproxy-",
+    exposeRawUpstreamModels: false,
     proxyApiKey: options?.proxyApiKey,
     requestTimeoutMs: 10_000,
     proxyLoggingEnabledDefault: options?.proxyLoggingEnabledDefault ?? false,
@@ -164,12 +166,45 @@ function makeConfig(
     modelAliases:
       options?.aliases ?? [
         {
+          alias: "codexproxy-gpt-5.4-low-fast",
+          upstreamModel: "gpt-5.4",
+          reasoningEffort: "low",
+          reasoningSummary: "none",
+          serviceTier: "priority",
+          contextWindow: 260000,
+        },
+        {
+          alias: "codexproxy-gpt-5.4-medium-fast",
+          upstreamModel: "gpt-5.4",
+          reasoningEffort: "medium",
+          reasoningSummary: "none",
+          serviceTier: "priority",
+          contextWindow: 260000,
+        },
+        {
+          alias: "codexproxy-gpt-5.4-high-fast",
+          upstreamModel: "gpt-5.4",
+          reasoningEffort: "high",
+          reasoningSummary: "none",
+          serviceTier: "priority",
+          contextWindow: 260000,
+        },
+        {
+          alias: "codexproxy-gpt-5.4-xhigh-fast",
+          upstreamModel: "gpt-5.4",
+          reasoningEffort: "xhigh",
+          reasoningSummary: "none",
+          serviceTier: "priority",
+          contextWindow: 260000,
+        },
+        {
           alias: "codex-gpt-5-4-low-fast",
           upstreamModel: "gpt-5.4",
           reasoningEffort: "low",
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          expose: false,
         },
         {
           alias: "codex-gpt-5-4-medium-fast",
@@ -178,6 +213,7 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          expose: false,
         },
         {
           alias: "codex-gpt-5-4-high-fast",
@@ -186,6 +222,7 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          expose: false,
         },
         {
           alias: "codex-gpt-5-4-xhigh-fast",
@@ -194,6 +231,7 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          expose: false,
         },
         {
           alias: "codex-gpt-5-4-fast-xhigh",
@@ -240,6 +278,7 @@ describe("codex-auth-openai-proxy", () => {
         JSON.stringify({
           models: [
             { slug: "gpt-5.4", visibility: "list" },
+            { slug: "gpt-5.3-codex", visibility: "list" },
             { slug: "hidden-model", visibility: "hidden" },
           ],
         }),
@@ -257,39 +296,45 @@ describe("codex-auth-openai-proxy", () => {
         object: "list",
         data: [
           {
-            id: "codex-gpt-5-4-low-fast",
+            id: "codexproxy-gpt-5.4-low-fast",
             object: "model",
             created: 0,
             owned_by: "codex-auth-openai-proxy",
             context_window: 260000,
           },
           {
-            id: "codex-gpt-5-4-medium-fast",
+            id: "codexproxy-gpt-5.4-medium-fast",
             object: "model",
             created: 0,
             owned_by: "codex-auth-openai-proxy",
             context_window: 260000,
           },
           {
-            id: "codex-gpt-5-4-high-fast",
+            id: "codexproxy-gpt-5.4-high-fast",
             object: "model",
             created: 0,
             owned_by: "codex-auth-openai-proxy",
             context_window: 260000,
           },
           {
-            id: "codex-gpt-5-4-xhigh-fast",
+            id: "codexproxy-gpt-5.4-xhigh-fast",
             object: "model",
             created: 0,
             owned_by: "codex-auth-openai-proxy",
             context_window: 260000,
           },
           {
-            id: "gpt-5.4",
+            id: "codexproxy-gpt-5.4",
             object: "model",
             created: 0,
-            owned_by: "openai",
+            owned_by: "codex-auth-openai-proxy",
             context_window: 260000,
+          },
+          {
+            id: "codexproxy-gpt-5.3-codex",
+            object: "model",
+            created: 0,
+            owned_by: "codex-auth-openai-proxy",
           },
         ],
       });
@@ -349,18 +394,87 @@ describe("codex-auth-openai-proxy", () => {
         method: "POST",
         url: "/v1/chat/completions",
         payload: {
-          model: "codex-gpt-5-4-medium-fast",
+          model: "codexproxy-gpt-5.4-medium-fast",
           messages: [{ role: "user", content: "hello" }],
         },
       });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
         id: "resp_alias_1",
-        model: "codex-gpt-5-4-medium-fast",
+        model: "codexproxy-gpt-5.4-medium-fast",
         choices: [
           {
             message: {
               content: "ALIAS_OK",
+            },
+          },
+        ],
+      });
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("maps codexproxy-prefixed passthrough models back to the upstream model", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      expect(request.path).toBe("/backend-api/codex/responses");
+      const body = JSON.parse(request.bodyText) as Record<string, unknown>;
+      expect(body.model).toBe("gpt-5.3-codex");
+      expect(body.reasoning).toBeUndefined();
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.created",
+            response: {
+              id: "resp_alias_passthrough_1",
+              created_at: 9,
+              model: "gpt-5.3-codex",
+            },
+          },
+          {
+            type: "response.output_text.done",
+            text: "PASSTHROUGH_OK",
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_alias_passthrough_1",
+              created_at: 9,
+              model: "gpt-5.3-codex",
+              usage: {
+                input_tokens: 5,
+                output_tokens: 2,
+                total_tokens: 7,
+              },
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        payload: {
+          model: "codexproxy-gpt-5.3-codex",
+          messages: [{ role: "user", content: "hello" }],
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        id: "resp_alias_passthrough_1",
+        model: "codexproxy-gpt-5.3-codex",
+        choices: [
+          {
+            message: {
+              content: "PASSTHROUGH_OK",
             },
           },
         ],
@@ -1175,7 +1289,7 @@ describe("codex-auth-openai-proxy", () => {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          model: "codex-gpt-5-4-low-fast",
+          model: "codexproxy-gpt-5.4-low-fast",
           stream: true,
           stream_options: { include_usage: true },
           messages: [{ role: "user", content: "hello" }],
