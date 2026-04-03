@@ -17,6 +17,7 @@ export interface AppConfig {
   exposeRawUpstreamModels: boolean;
   proxyApiKey?: string;
   proxyApiKeys: string[];
+  proxyApiKeysStatePath: string;
   requestTimeoutMs: number;
   proxyLoggingEnabledDefault: boolean;
   proxyLogFilePath: string;
@@ -119,6 +120,10 @@ export async function resolveConfig(): Promise<AppConfig> {
     exposeRawUpstreamModels: envBoolean("CODEX_EXPOSE_RAW_UPSTREAM_MODELS", false),
     proxyApiKey,
     proxyApiKeys,
+    proxyApiKeysStatePath: expandHome(
+      process.env.PROXY_API_KEYS_STATE_PATH ??
+        path.join(defaultArtifactsDir, "api-keys.json"),
+    ),
     requestTimeoutMs: envNumber("REQUEST_TIMEOUT_MS", 120_000),
     proxyLoggingEnabledDefault: envBoolean("PROXY_LOGGING_ENABLED", false),
     proxyLogFilePath: expandHome(

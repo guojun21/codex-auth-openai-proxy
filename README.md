@@ -11,6 +11,8 @@ Local OpenAI-compatible proxy backed by the ChatGPT/Codex credentials stored in 
 - `GET /admin/logging`
 - `POST /admin/logging`
 - `GET /admin/logs`
+- `GET /admin/api-keys`
+- `POST /admin/api-keys`
 
 ## Scope
 
@@ -115,6 +117,18 @@ curl "http://127.0.0.1:8787/admin/logs?limit=20" \
   -H "Authorization: Bearer $PROXY_API_KEY"
 ```
 
+API key admin example:
+
+```bash
+curl http://127.0.0.1:8787/admin/api-keys \
+  -H "Authorization: Bearer $PROXY_API_KEY"
+
+curl http://127.0.0.1:8787/admin/api-keys \
+  -H "Authorization: Bearer $PROXY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"label":"cursor-secondary"}'
+```
+
 When logging is disabled, request traffic is not appended to disk. Only the enable transition is force-written so detailed logging can start immediately after you turn it on.
 
 Logging detail and retention:
@@ -142,6 +156,7 @@ Logging detail and retention:
 - `CODEX_ALIAS_GPT54_FAST_XHIGH`: default `codex-gpt-5-4-fast-xhigh` (legacy compatibility alias)
 - `PROXY_API_KEY`: primary API key required by this proxy
 - `PROXY_API_KEYS`: optional comma-separated extra API keys accepted by this proxy
+- `PROXY_API_KEYS_STATE_PATH`: default `./var/api-keys.json` for generated API keys
 - `REQUEST_TIMEOUT_MS`: default `120000`
 - `PROXY_LOGGING_ENABLED`: default `false`
 - `PROXY_LOG_FILE_PATH`: default `./var/request-debug.jsonl`

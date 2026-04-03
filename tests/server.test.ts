@@ -162,6 +162,7 @@ function makeConfig(
     exposeRawUpstreamModels: false,
     proxyApiKey: options?.proxyApiKey,
     proxyApiKeys,
+    proxyApiKeysStatePath: path.join(rootDir, "api-keys.json"),
     requestTimeoutMs: 10_000,
     proxyLoggingEnabledDefault: options?.proxyLoggingEnabledDefault ?? false,
     proxyLogFilePath: path.join(rootDir, "request-debug.jsonl"),
@@ -1550,6 +1551,109 @@ describe("codex-auth-openai-proxy", () => {
           expect.objectContaining({ id: "codexproxy-gpt-5.4" }),
         ]),
       );
+
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("can mint a new API key and use it immediately", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      if (request.path === "/backend-api/codex/models") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            models: [{ slug: "gpt-5.4", visibility: "list" }],
+          }),
+        );
+        return;
+      }
+
+      res.writeHead(404).end();
+    });
+
+    try {
+      const app = await buildServer(
+        makeConfig(authPath, upstream.baseUrl, {
+          proxyApiKey: "proxy-secret",
+        }),
+      );
+
+      const createResponse = await app.inject({
+        method: "POST",
+        url: "/admin/api-keys",
+        headers: {
+          authorization: "Bearer proxy-secret",
+        },
+        payload: {
+          label: "cursor-secondary",
+        },
+      });
+      expect(createResponse.statusCode).toBe(200);
+      const created = createResponse.json() as {
+        id: string;
+        key: string;
+        label: string | null;
+        created_at: string;
+      };
+      expect(created.id).toMatch(/^key_/);
+      expect(created.key.length).toBeGreaterThan(20);
+      expect(created.label).toBe("cursor-secondary");
+      expect(created.created_at).toBeTruthy();
+
+      const listResponse = await app.inject({
+        method: "GET",
+        url: "/admin/api-keys",
+        headers: {
+          authorization: "Bearer proxy-secret",
+        },
+      });
+      expect(listResponse.statusCode).toBe(200);
+      expect(listResponse.json()).toMatchObject({
+        auth_enabled: true,
+        configured_api_key_count: 2,
+        keys: expect.arrayContaining([
+          expect.objectContaining({
+            id: "env-1",
+            source: "env",
+          }),
+          expect.objectContaining({
+            id: created.id,
+            source: "generated",
+            label: "cursor-secondary",
+          }),
+        ]),
+      });
+
+      const modelsResponse = await app.inject({
+        method: "GET",
+        url: "/v1/models",
+        headers: {
+          "x-api-key": created.key,
+        },
+      });
+      expect(modelsResponse.statusCode).toBe(200);
+
+      const refreshedListResponse = await app.inject({
+        method: "GET",
+        url: "/admin/api-keys",
+        headers: {
+          authorization: "Bearer proxy-secret",
+        },
+      });
+      expect(refreshedListResponse.statusCode).toBe(200);
+      expect(refreshedListResponse.json()).toMatchObject({
+        keys: expect.arrayContaining([
+          expect.objectContaining({
+            id: created.id,
+            last_used_at: expect.any(String),
+          }),
+        ]),
+      });
 
       await app.close();
     } finally {

@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 
+import { ProxyApiKeyStore } from "./api-keys.js";
 import type { AppConfig } from "./config.js";
 import { fetchWithAuthRetry, resolveUpstreamAuth } from "./auth.js";
 import { ProxyLogger, sanitizeForLog, sanitizeHeaders } from "./logging.js";
@@ -34,20 +35,21 @@ function extractRequestApiKey(requestHeaders: Record<string, unknown>): string |
   return null;
 }
 
-function ensureAuthorized(
+async function ensureAuthorized(
   requestHeaders: Record<string, unknown>,
-  proxyApiKeys: string[],
-): void {
-  if (proxyApiKeys.length === 0) {
+  apiKeyStore: ProxyApiKeyStore,
+): Promise<void> {
+  if (!apiKeyStore.isEnabled()) {
     return;
   }
 
   const token = extractRequestApiKey(requestHeaders);
-  if (!token || !proxyApiKeys.includes(token)) {
+  if (!token || !apiKeyStore.find(token)) {
     throw Object.assign(new Error("Unauthorized: missing or invalid API key"), {
       statusCode: 401,
     });
   }
+  await apiKeyStore.markUsed(token);
 }
 
 function requestPath(url: string): string {
@@ -238,7 +240,12 @@ export async function buildServer(config: AppConfig) {
     logger: true,
   });
   const proxyLogger = new ProxyLogger(config);
+  const apiKeyStore = new ProxyApiKeyStore(
+    config.proxyApiKeysStatePath,
+    config.proxyApiKeys,
+  );
   await proxyLogger.init();
+  await apiKeyStore.init();
 
   let cachedModels:
     | {
@@ -249,9 +256,9 @@ export async function buildServer(config: AppConfig) {
 
   app.get("/health", async (request, reply) => {
     try {
-      ensureAuthorized(
+      await ensureAuthorized(
         request.headers as Record<string, unknown>,
-        config.proxyApiKeys,
+        apiKeyStore,
       );
       const auth = await resolveUpstreamAuth(config);
       return {
@@ -260,9 +267,9 @@ export async function buildServer(config: AppConfig) {
         auth_json_path: config.authJsonPath,
         account_id: auth.accountId,
         client_version: config.clientVersion,
-        auth_enabled: config.proxyApiKeys.length > 0,
+        auth_enabled: apiKeyStore.isEnabled(),
         accepted_auth_headers: ["Authorization: Bearer <key>", "X-API-Key: <key>"],
-        configured_api_key_count: config.proxyApiKeys.length,
+        configured_api_key_count: apiKeyStore.count(),
         logging_enabled: proxyLogger.isEnabled(),
         model_aliases: config.modelAliases
           .filter((alias) => alias.expose !== false)
@@ -282,7 +289,7 @@ export async function buildServer(config: AppConfig) {
 
   app.get("/admin/logging", async (request, reply) => {
     try {
-      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKeys);
+      await ensureAuthorized(request.headers as Record<string, unknown>, apiKeyStore);
       return proxyLogger.status();
     } catch (error) {
       return reply.code(statusCodeFromError(error)).send(proxyErrorBody(error));
@@ -293,7 +300,7 @@ export async function buildServer(config: AppConfig) {
     const startedAt = Date.now();
     const requestBody = (request.body ?? {}) as JsonMap;
     try {
-      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKeys);
+      await ensureAuthorized(request.headers as Record<string, unknown>, apiKeyStore);
       if (typeof requestBody.enabled !== "boolean") {
         return reply.code(400).send({
           error: {
@@ -329,7 +336,7 @@ export async function buildServer(config: AppConfig) {
 
   app.get("/admin/logs", async (request, reply) => {
     try {
-      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKeys);
+      await ensureAuthorized(request.headers as Record<string, unknown>, apiKeyStore);
       const query = (request.query ?? {}) as Record<string, unknown>;
       const rawLimit = query.limit;
       const limit =
@@ -347,6 +354,40 @@ export async function buildServer(config: AppConfig) {
     }
   });
 
+  app.get("/admin/api-keys", async (request, reply) => {
+    try {
+      await ensureAuthorized(request.headers as Record<string, unknown>, apiKeyStore);
+      return {
+        auth_enabled: apiKeyStore.isEnabled(),
+        configured_api_key_count: apiKeyStore.count(),
+        keys: apiKeyStore.list(),
+      };
+    } catch (error) {
+      return reply.code(statusCodeFromError(error)).send(proxyErrorBody(error));
+    }
+  });
+
+  app.post("/admin/api-keys", async (request, reply) => {
+    const requestBody = (request.body ?? {}) as JsonMap;
+    try {
+      await ensureAuthorized(request.headers as Record<string, unknown>, apiKeyStore);
+      const label =
+        typeof requestBody.label === "string" && requestBody.label.trim().length > 0
+          ? requestBody.label.trim()
+          : undefined;
+      const created = await apiKeyStore.create(label);
+      return {
+        id: created.id,
+        key: created.key,
+        label: created.label,
+        created_at: created.created_at,
+        last_used_at: created.last_used_at,
+      };
+    } catch (error) {
+      return reply.code(statusCodeFromError(error)).send(proxyErrorBody(error));
+    }
+  });
+
   app.get("/v1/models", async (request, reply) => {
     const startedAt = Date.now();
     const requestDetails = {
@@ -357,7 +398,7 @@ export async function buildServer(config: AppConfig) {
     };
 
     try {
-      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKeys);
+      await ensureAuthorized(request.headers as Record<string, unknown>, apiKeyStore);
       const now = Date.now();
       if (cachedModels && cachedModels.expiresAt > now) {
         await proxyLogger.record({
@@ -479,7 +520,7 @@ export async function buildServer(config: AppConfig) {
     };
 
     try {
-      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKeys);
+      await ensureAuthorized(request.headers as Record<string, unknown>, apiKeyStore);
       const upstreamRequest = buildUpstreamResponsesRequest(requestBody, config);
       const streamRequested = Boolean(requestBody.stream);
       const upstream = await postUpstreamResponses(config, upstreamRequest.upstreamBody);
@@ -652,7 +693,7 @@ export async function buildServer(config: AppConfig) {
     };
 
     try {
-      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKeys);
+      await ensureAuthorized(request.headers as Record<string, unknown>, apiKeyStore);
       const streamRequested = Boolean(requestBody.stream);
       const upstreamRequest = buildUpstreamChatRequest(requestBody, config);
       const upstream = await postUpstreamResponses(config, upstreamRequest.upstreamBody);
