@@ -119,6 +119,51 @@ function applyCursorGpt54Profile(
     };
   }
 
+  const messageHasImage = Array.isArray(requestBody.messages)
+    && requestBody.messages.some((message) => {
+      if (!message || typeof message !== "object") {
+        return false;
+      }
+      const content = (message as JsonMap).content;
+      return (
+        Array.isArray(content)
+        && content.some((part) => {
+          if (!part || typeof part !== "object") {
+            return false;
+          }
+          const type = typeof (part as JsonMap).type === "string" ? (part as JsonMap).type : "";
+          return type === "input_image" || type === "image_url";
+        })
+      );
+    });
+
+  const inputHasImage = Array.isArray(requestBody.input)
+    && requestBody.input.some((item) => {
+      if (!item || typeof item !== "object") {
+        return false;
+      }
+      const content = (item as JsonMap).content;
+      return (
+        Array.isArray(content)
+        && content.some((part) => {
+          if (!part || typeof part !== "object") {
+            return false;
+          }
+          const type = typeof (part as JsonMap).type === "string" ? (part as JsonMap).type : "";
+          return type === "input_image" || type === "image_url";
+        })
+      );
+    });
+
+  if (messageHasImage || inputHasImage) {
+    return {
+      body: requestBody,
+      detected: true,
+      applied: false,
+      matchedBy: detection.matchedBy,
+    };
+  }
+
   return {
     body: {
       ...requestBody,

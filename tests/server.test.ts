@@ -159,6 +159,7 @@ function makeConfig(
     clientVersion: "0.111.0",
     defaultModel: "gpt-5.4",
     modelAliasPrefix: "codexproxy-",
+    exposePrefixedModels: false,
     exposeRawUpstreamModels: false,
     proxyApiKey: options?.proxyApiKey,
     proxyApiKeys,
@@ -178,6 +179,9 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          supportsAgent: true,
+          supportsThinking: true,
+          supportsImages: true,
         },
         {
           alias: "codexproxy-gpt-5.4-medium-fast",
@@ -186,6 +190,9 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          supportsAgent: true,
+          supportsThinking: true,
+          supportsImages: true,
         },
         {
           alias: "codexproxy-gpt-5.4-high-fast",
@@ -194,6 +201,9 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          supportsAgent: true,
+          supportsThinking: true,
+          supportsImages: true,
         },
         {
           alias: "codexproxy-gpt-5.4-xhigh-fast",
@@ -202,6 +212,9 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          supportsAgent: true,
+          supportsThinking: true,
+          supportsImages: true,
         },
         {
           alias: "codex-gpt-5-4-low-fast",
@@ -210,6 +223,9 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          supportsAgent: true,
+          supportsThinking: true,
+          supportsImages: true,
           expose: false,
         },
         {
@@ -219,6 +235,9 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          supportsAgent: true,
+          supportsThinking: true,
+          supportsImages: true,
           expose: false,
         },
         {
@@ -228,6 +247,9 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          supportsAgent: true,
+          supportsThinking: true,
+          supportsImages: true,
           expose: false,
         },
         {
@@ -237,6 +259,9 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          supportsAgent: true,
+          supportsThinking: true,
+          supportsImages: true,
           expose: false,
         },
         {
@@ -246,6 +271,9 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          supportsAgent: true,
+          supportsThinking: true,
+          supportsImages: true,
           expose: false,
         },
         {
@@ -255,7 +283,30 @@ function makeConfig(
           reasoningSummary: "none",
           serviceTier: "priority",
           contextWindow: 260000,
+          supportsAgent: true,
+          supportsThinking: true,
+          supportsImages: true,
           expose: false,
+        },
+        {
+          alias: "codexproxy-gpt-5.3-codex",
+          upstreamModel: "gpt-5.3-codex",
+        },
+        {
+          alias: "codexproxy-gpt-5.2-codex",
+          upstreamModel: "gpt-5.2-codex",
+        },
+        {
+          alias: "codexproxy-gpt-5.2",
+          upstreamModel: "gpt-5.2",
+        },
+        {
+          alias: "codexproxy-gpt-5.1-codex-max",
+          upstreamModel: "gpt-5.1-codex-max",
+        },
+        {
+          alias: "codexproxy-gpt-5.1-codex-mini",
+          upstreamModel: "gpt-5.1-codex-mini",
         },
       ],
   };
@@ -298,7 +349,7 @@ describe("codex-auth-openai-proxy", () => {
         url: "/v1/models",
       });
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({
+      expect(response.json()).toMatchObject({
         object: "list",
         data: [
           {
@@ -307,6 +358,16 @@ describe("codex-auth-openai-proxy", () => {
             created: 0,
             owned_by: "codex-auth-openai-proxy",
             context_window: 260000,
+            supportsAgent: true,
+            supportsThinking: true,
+            supportsImages: true,
+            metadata: {
+              capabilities: {
+                vision: true,
+                agentMode: true,
+                toolCalling: true,
+              },
+            },
           },
           {
             id: "codexproxy-gpt-5.4-medium-fast",
@@ -314,6 +375,7 @@ describe("codex-auth-openai-proxy", () => {
             created: 0,
             owned_by: "codex-auth-openai-proxy",
             context_window: 260000,
+            supportsImages: true,
           },
           {
             id: "codexproxy-gpt-5.4-high-fast",
@@ -321,6 +383,7 @@ describe("codex-auth-openai-proxy", () => {
             created: 0,
             owned_by: "codex-auth-openai-proxy",
             context_window: 260000,
+            supportsImages: true,
           },
           {
             id: "codexproxy-gpt-5.4-xhigh-fast",
@@ -328,13 +391,7 @@ describe("codex-auth-openai-proxy", () => {
             created: 0,
             owned_by: "codex-auth-openai-proxy",
             context_window: 260000,
-          },
-          {
-            id: "codexproxy-gpt-5.4",
-            object: "model",
-            created: 0,
-            owned_by: "codex-auth-openai-proxy",
-            context_window: 260000,
+            supportsImages: true,
           },
           {
             id: "codexproxy-gpt-5.3-codex",
@@ -653,6 +710,101 @@ describe("codex-auth-openai-proxy", () => {
     }
   });
 
+  it("moves system messages out of /v1/responses input and into instructions", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      expect(request.path).toBe("/backend-api/codex/responses");
+      const body = JSON.parse(request.bodyText) as Record<string, unknown>;
+      expect(String(body.instructions)).toContain("[system]");
+      expect(String(body.instructions)).toContain("be terse");
+      expect(body.input).toEqual([
+        {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: "describe this image" },
+            {
+              type: "input_image",
+              image_url: "data:image/png;base64,aGVsbG8=",
+            },
+          ],
+        },
+      ]);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.output_text.done",
+            text: "IMAGE_OK",
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_image_1",
+              created_at: 2,
+              model: "gpt-5.4",
+              status: "completed",
+              output: [
+                {
+                  id: "msg_image_1",
+                  type: "message",
+                  role: "assistant",
+                  status: "completed",
+                  content: [{ type: "output_text", text: "IMAGE_OK" }],
+                },
+              ],
+              usage: {
+                input_tokens: 7,
+                output_tokens: 2,
+                total_tokens: 9,
+              },
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/responses",
+        payload: {
+          model: "codex-gpt-5-4-xhigh-fast",
+          input: [
+            { role: "system", content: "be terse" },
+            {
+              role: "user",
+              content: [
+                { type: "input_text", text: "describe this image" },
+                {
+                  type: "input_image",
+                  image_url: "data:image/png;base64,aGVsbG8=",
+                },
+              ],
+            },
+          ],
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        id: "resp_image_1",
+        status: "completed",
+        output: [
+          {
+            role: "assistant",
+            content: [{ text: "IMAGE_OK" }],
+          },
+        ],
+      });
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it("converts chat completions requests and returns standard non-streaming chat responses", async () => {
     const tempDir = await makeTempDir();
     cleanupPaths.push(tempDir);
@@ -840,6 +992,109 @@ describe("codex-auth-openai-proxy", () => {
           prompt_tokens: 6,
           completion_tokens: 2,
           total_tokens: 8,
+        },
+      });
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("preserves input_image parts on chat completions requests", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      const body = JSON.parse(request.bodyText) as Record<string, unknown>;
+      expect(body.input).toEqual([
+        {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: "看看这张图" },
+            {
+              type: "input_image",
+              image_url: "data:image/png;base64,ZmFrZQ==",
+              detail: "high",
+            },
+          ],
+        },
+      ]);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.output_text.done",
+            text: "IMAGE_OK",
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_image_1",
+              created_at: 457,
+              model: "gpt-5.4",
+              usage: {
+                input_tokens: 9,
+                output_tokens: 2,
+                total_tokens: 11,
+              },
+              output: [
+                {
+                  id: "msg_image_1",
+                  type: "message",
+                  role: "assistant",
+                  status: "completed",
+                  content: [{ type: "output_text", text: "IMAGE_OK" }],
+                },
+              ],
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        payload: {
+          model: "gpt-5.4",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "看看这张图" },
+                {
+                  type: "input_image",
+                  image_url: "data:image/png;base64,ZmFrZQ==",
+                  detail: "high",
+                },
+              ],
+            },
+          ],
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        id: "resp_image_1",
+        object: "chat.completion",
+        created: 457,
+        model: "gpt-5.4",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "IMAGE_OK",
+            },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 9,
+          completion_tokens: 2,
+          total_tokens: 11,
         },
       });
       await app.close();
@@ -1220,6 +1475,93 @@ describe("codex-auth-openai-proxy", () => {
             },
           },
         ],
+      });
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("does not force the Cursor gpt-5.4 profile for multimodal image requests", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      expect(request.path).toBe("/backend-api/codex/responses");
+      const body = JSON.parse(request.bodyText) as Record<string, unknown>;
+      expect(body.model).toBe("gpt-5.4");
+      expect(body.reasoning).toBeUndefined();
+      expect(body.service_tier).toBeUndefined();
+      expect(body.input).toEqual([
+        {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: "看图" },
+            {
+              type: "input_image",
+              image_url: "https://example.com/demo.png",
+              detail: "high",
+            },
+          ],
+        },
+      ]);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.created",
+            response: {
+              id: "resp_cursor_image_1",
+              created_at: 88,
+              model: "gpt-5.4",
+            },
+          },
+          {
+            type: "response.output_text.done",
+            text: "CURSOR_IMAGE_OK",
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_cursor_image_1",
+              created_at: 88,
+              model: "gpt-5.4",
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        headers: {
+          "user-agent": "Cursor/2.6.22",
+        },
+        payload: {
+          model: "gpt-5.4",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "看图" },
+                {
+                  type: "input_image",
+                  image_url: "https://example.com/demo.png",
+                  detail: "high",
+                },
+              ],
+            },
+          ],
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        id: "resp_cursor_image_1",
+        model: "gpt-5.4",
       });
       await app.close();
     } finally {
@@ -1834,7 +2176,7 @@ describe("codex-auth-openai-proxy", () => {
       expect((xApiKeyModels.json() as { data: Array<{ id: string }> }).data).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ id: "codexproxy-gpt-5.4-low-fast" }),
-          expect.objectContaining({ id: "codexproxy-gpt-5.4" }),
+          expect.objectContaining({ id: "codexproxy-gpt-5.4-xhigh-fast" }),
         ]),
       );
 

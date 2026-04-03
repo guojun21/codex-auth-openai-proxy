@@ -8,6 +8,10 @@ function ensureText(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function ensureBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
 function normalizeEffort(value: string): string {
   if (value === "fast") {
     return "low";
@@ -178,6 +182,18 @@ function normalizeMessageContent(
       }
       continue;
     }
+    if (type === "input_image") {
+      const imageUrl = ensureText(record.image_url);
+      if (imageUrl) {
+        const imagePart: JsonMap = { type: "input_image", image_url: imageUrl };
+        const detail = ensureText(record.detail);
+        if (detail) {
+          imagePart.detail = detail;
+        }
+        parts.push(imagePart);
+      }
+      continue;
+    }
     if (role === "assistant" && type === "refusal") {
       const text = ensureText(record.text);
       if (text) {
@@ -306,6 +322,19 @@ function extractMessageRecords(items: unknown[]): JsonMap[] {
   });
 }
 
+function stripInstructionMessageItems(items: unknown[]): unknown[] {
+  return items.filter((item) => {
+    if (!item || typeof item !== "object") {
+      return true;
+    }
+
+    const record = item as JsonMap;
+    const role =
+      record.type === "message" ? ensureText(record.role) : ensureText(record.role);
+    return role !== "system" && role !== "developer";
+  });
+}
+
 function buildChatInputFromExplicitItems(items: unknown[]): unknown[] {
   return items.filter((item) => {
     if (!item || typeof item !== "object") {
@@ -357,22 +386,33 @@ export function buildUpstreamResponsesRequest(
     normalizedInput = [];
   }
 
+  const explicitInstructions = ensureText(body.instructions);
+  const extractedInstructions = Array.isArray(normalizedInput)
+    ? extractInstructionTexts(extractMessageRecords(normalizedInput))
+    : "";
+  const instructions = [explicitInstructions, extractedInstructions]
+    .filter((value): value is string => Boolean(value))
+    .join("\n\n");
+  const sanitizedInput = Array.isArray(normalizedInput)
+    ? stripInstructionMessageItems(normalizedInput)
+    : normalizedInput;
+
   return {
     publicModel: selection.publicModel,
     aliasApplied: selection.aliasApplied,
     upstreamBody: {
       model: selection.upstreamModel,
-    instructions: typeof body.instructions === "string" ? body.instructions : "",
-    input: normalizedInput,
-    tools: Array.isArray(body.tools) ? body.tools : [],
-    tool_choice: body.tool_choice ?? "auto",
-    parallel_tool_calls: Boolean(body.parallel_tool_calls),
-    store: Boolean(body.store),
-    stream: true,
-    include: Array.isArray(body.include) ? body.include : [],
+      instructions,
+      input: sanitizedInput,
+      tools: Array.isArray(body.tools) ? body.tools : [],
+      tool_choice: body.tool_choice ?? "auto",
+      parallel_tool_calls: Boolean(body.parallel_tool_calls),
+      store: Boolean(body.store),
+      stream: true,
+      include: Array.isArray(body.include) ? body.include : [],
       reasoning: mergeReasoning(selection.defaultReasoning, normalizeReasoning(body)),
       service_tier: normalizeServiceTier(body) ?? selection.defaultServiceTier,
-    text: normalizeText(body),
+      text: normalizeText(body),
     },
   };
 }
@@ -563,6 +603,60 @@ export function toModelsResponse(
   upstreamModels: Array<JsonMap>,
   config: AppConfig,
 ): JsonMap {
+  function extractVisionCapability(model: JsonMap): boolean | undefined {
+    const flat =
+      ensureBoolean(model.supportsImages) ??
+      ensureBoolean(model.supports_images) ??
+      ensureBoolean(model.supportsVision) ??
+      ensureBoolean(model.supports_vision);
+    if (typeof flat === "boolean") {
+      return flat;
+    }
+    const capabilities =
+      model.capabilities && typeof model.capabilities === "object"
+        ? (model.capabilities as JsonMap)
+        : undefined;
+    return capabilities
+      ? ensureBoolean(capabilities.vision) ??
+          ensureBoolean(capabilities.images) ??
+          ensureBoolean(capabilities.image_input)
+      : undefined;
+  }
+
+  function extractAgentCapability(model: JsonMap): boolean | undefined {
+    const flat =
+      ensureBoolean(model.supportsAgent) ??
+      ensureBoolean(model.supports_agent);
+    if (typeof flat === "boolean") {
+      return flat;
+    }
+    const capabilities =
+      model.capabilities && typeof model.capabilities === "object"
+        ? (model.capabilities as JsonMap)
+        : undefined;
+    return capabilities
+      ? ensureBoolean(capabilities.agentMode) ??
+          ensureBoolean(capabilities.toolCalling)
+      : undefined;
+  }
+
+  function extractThinkingCapability(model: JsonMap): boolean | undefined {
+    const flat =
+      ensureBoolean(model.supportsThinking) ??
+      ensureBoolean(model.supports_thinking);
+    if (typeof flat === "boolean") {
+      return flat;
+    }
+    const capabilities =
+      model.capabilities && typeof model.capabilities === "object"
+        ? (model.capabilities as JsonMap)
+        : undefined;
+    return capabilities
+      ? ensureBoolean(capabilities.thinking) ??
+          ensureBoolean(capabilities.reasoning)
+      : undefined;
+  }
+
   const upstreamVisibleModels = upstreamModels
     .filter((model) => {
       const visibility = ensureText(model.visibility);
@@ -582,6 +676,33 @@ export function toModelsResponse(
         ...(typeof inheritedContextWindow === "number"
           ? { context_window: inheritedContextWindow }
           : {}),
+        ...(typeof extractAgentCapability(model) === "boolean"
+          ? { supportsAgent: extractAgentCapability(model) }
+          : {}),
+        ...(typeof extractThinkingCapability(model) === "boolean"
+          ? { supportsThinking: extractThinkingCapability(model) }
+          : {}),
+        ...(typeof extractVisionCapability(model) === "boolean"
+          ? { supportsImages: extractVisionCapability(model) }
+          : {}),
+        ...(typeof extractVisionCapability(model) === "boolean" ||
+        typeof extractAgentCapability(model) === "boolean"
+          ? {
+              metadata: {
+                capabilities: {
+                  ...(typeof extractVisionCapability(model) === "boolean"
+                    ? { vision: extractVisionCapability(model) }
+                    : {}),
+                  ...(typeof extractAgentCapability(model) === "boolean"
+                    ? {
+                        agentMode: extractAgentCapability(model),
+                        toolCalling: extractAgentCapability(model),
+                      }
+                    : {}),
+                },
+              },
+            }
+          : {}),
       };
     });
 
@@ -596,6 +717,33 @@ export function toModelsResponse(
       created: 0,
       owned_by: "codex-auth-openai-proxy",
       ...(alias.contextWindow ? { context_window: alias.contextWindow } : {}),
+      ...(typeof alias.supportsAgent === "boolean"
+        ? { supportsAgent: alias.supportsAgent }
+        : {}),
+      ...(typeof alias.supportsThinking === "boolean"
+        ? { supportsThinking: alias.supportsThinking }
+        : {}),
+      ...(typeof alias.supportsImages === "boolean"
+        ? { supportsImages: alias.supportsImages }
+        : {}),
+      ...((typeof alias.supportsImages === "boolean" ||
+        typeof alias.supportsAgent === "boolean")
+        ? {
+            metadata: {
+              capabilities: {
+                ...(typeof alias.supportsImages === "boolean"
+                  ? { vision: alias.supportsImages }
+                  : {}),
+                ...(typeof alias.supportsAgent === "boolean"
+                  ? {
+                      agentMode: alias.supportsAgent,
+                      toolCalling: alias.supportsAgent,
+                    }
+                  : {}),
+              },
+            },
+          }
+        : {}),
     }));
 
   const prefixedModels = upstreamVisibleModels.map((model) => ({
@@ -611,7 +759,7 @@ export function toModelsResponse(
   const seen = new Set<string>();
   const data = [
     ...syntheticModels,
-    ...prefixedModels,
+    ...(config.exposePrefixedModels ? prefixedModels : []),
     ...(config.exposeRawUpstreamModels ? upstreamVisibleModels : []),
   ].filter((model) => {
     const id = String(model.id);

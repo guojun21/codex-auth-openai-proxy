@@ -14,6 +14,7 @@ export interface AppConfig {
   clientVersion: string;
   defaultModel: string;
   modelAliasPrefix: string;
+  exposePrefixedModels: boolean;
   exposeRawUpstreamModels: boolean;
   proxyApiKey?: string;
   proxyApiKeys: string[];
@@ -31,6 +32,9 @@ export interface AppConfig {
     reasoningSummary?: string;
     serviceTier?: string;
     contextWindow?: number;
+    supportsAgent?: boolean;
+    supportsThinking?: boolean;
+    supportsImages?: boolean;
     expose?: boolean;
   }>;
 }
@@ -117,6 +121,7 @@ export async function resolveConfig(): Promise<AppConfig> {
     clientVersion: await detectClientVersion(),
     defaultModel: process.env.CODEX_DEFAULT_MODEL ?? "gpt-5.4",
     modelAliasPrefix: process.env.CODEX_MODEL_ALIAS_PREFIX ?? "codexproxy-",
+    exposePrefixedModels: envBoolean("CODEX_EXPOSE_PREFIXED_MODELS", false),
     exposeRawUpstreamModels: envBoolean("CODEX_EXPOSE_RAW_UPSTREAM_MODELS", false),
     proxyApiKey,
     proxyApiKeys,
@@ -145,6 +150,9 @@ export async function resolveConfig(): Promise<AppConfig> {
         reasoningSummary: "none",
         serviceTier: "priority",
         contextWindow: 260_000,
+        supportsAgent: true,
+        supportsThinking: true,
+        supportsImages: true,
       },
       {
         alias:
@@ -155,6 +163,9 @@ export async function resolveConfig(): Promise<AppConfig> {
         reasoningSummary: "none",
         serviceTier: "priority",
         contextWindow: 260_000,
+        supportsAgent: true,
+        supportsThinking: true,
+        supportsImages: true,
       },
       {
         alias:
@@ -164,6 +175,9 @@ export async function resolveConfig(): Promise<AppConfig> {
         reasoningSummary: "none",
         serviceTier: "priority",
         contextWindow: 260_000,
+        supportsAgent: true,
+        supportsThinking: true,
+        supportsImages: true,
       },
       {
         alias:
@@ -173,6 +187,9 @@ export async function resolveConfig(): Promise<AppConfig> {
         reasoningSummary: "none",
         serviceTier: "priority",
         contextWindow: 260_000,
+        supportsAgent: true,
+        supportsThinking: true,
+        supportsImages: true,
       },
       {
         alias: "codex-gpt-5-4-low-fast",
@@ -181,6 +198,9 @@ export async function resolveConfig(): Promise<AppConfig> {
         reasoningSummary: "none",
         serviceTier: "priority",
         contextWindow: 260_000,
+        supportsAgent: true,
+        supportsThinking: true,
+        supportsImages: true,
         expose: false,
       },
       {
@@ -190,6 +210,9 @@ export async function resolveConfig(): Promise<AppConfig> {
         reasoningSummary: "none",
         serviceTier: "priority",
         contextWindow: 260_000,
+        supportsAgent: true,
+        supportsThinking: true,
+        supportsImages: true,
         expose: false,
       },
       {
@@ -199,6 +222,9 @@ export async function resolveConfig(): Promise<AppConfig> {
         reasoningSummary: "none",
         serviceTier: "priority",
         contextWindow: 260_000,
+        supportsAgent: true,
+        supportsThinking: true,
+        supportsImages: true,
         expose: false,
       },
       {
@@ -208,7 +234,30 @@ export async function resolveConfig(): Promise<AppConfig> {
         reasoningSummary: "none",
         serviceTier: "priority",
         contextWindow: 260_000,
+        supportsAgent: true,
+        supportsThinking: true,
+        supportsImages: true,
         expose: false,
+      },
+      {
+        alias: "codexproxy-gpt-5.3-codex",
+        upstreamModel: "gpt-5.3-codex",
+      },
+      {
+        alias: "codexproxy-gpt-5.2-codex",
+        upstreamModel: "gpt-5.2-codex",
+      },
+      {
+        alias: "codexproxy-gpt-5.2",
+        upstreamModel: "gpt-5.2",
+      },
+      {
+        alias: "codexproxy-gpt-5.1-codex-max",
+        upstreamModel: "gpt-5.1-codex-max",
+      },
+      {
+        alias: "codexproxy-gpt-5.1-codex-mini",
+        upstreamModel: "gpt-5.1-codex-mini",
       },
       {
         alias:
@@ -219,6 +268,9 @@ export async function resolveConfig(): Promise<AppConfig> {
         reasoningSummary: "none",
         serviceTier: "priority",
         contextWindow: 260_000,
+        supportsAgent: true,
+        supportsThinking: true,
+        supportsImages: true,
         expose: false,
       },
       {
@@ -228,6 +280,9 @@ export async function resolveConfig(): Promise<AppConfig> {
         reasoningSummary: "none",
         serviceTier: "priority",
         contextWindow: 260_000,
+        supportsAgent: true,
+        supportsThinking: true,
+        supportsImages: true,
         expose: false,
       },
     ],
