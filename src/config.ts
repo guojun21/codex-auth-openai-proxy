@@ -16,6 +16,7 @@ export interface AppConfig {
   modelAliasPrefix: string;
   exposeRawUpstreamModels: boolean;
   proxyApiKey?: string;
+  proxyApiKeys: string[];
   requestTimeoutMs: number;
   proxyLoggingEnabledDefault: boolean;
   proxyLogFilePath: string;
@@ -69,6 +70,14 @@ function envBoolean(name: string, fallback: boolean): boolean {
   return fallback;
 }
 
+function parseApiKeys(...sources: Array<string | undefined>): string[] {
+  const keys = sources
+    .flatMap((source) => (source ?? "").split(","))
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  return [...new Set(keys)];
+}
+
 export async function detectClientVersion(): Promise<string> {
   if (process.env.CODEX_CLIENT_VERSION) {
     return process.env.CODEX_CLIENT_VERSION;
@@ -90,6 +99,8 @@ export async function detectClientVersion(): Promise<string> {
 
 export async function resolveConfig(): Promise<AppConfig> {
   const defaultArtifactsDir = path.resolve(process.cwd(), "var");
+  const proxyApiKey = process.env.PROXY_API_KEY?.trim() || undefined;
+  const proxyApiKeys = parseApiKeys(proxyApiKey, process.env.PROXY_API_KEYS);
 
   return {
     host: process.env.HOST ?? "127.0.0.1",
@@ -106,7 +117,8 @@ export async function resolveConfig(): Promise<AppConfig> {
     defaultModel: process.env.CODEX_DEFAULT_MODEL ?? "gpt-5.4",
     modelAliasPrefix: process.env.CODEX_MODEL_ALIAS_PREFIX ?? "codexproxy-",
     exposeRawUpstreamModels: envBoolean("CODEX_EXPOSE_RAW_UPSTREAM_MODELS", false),
-    proxyApiKey: process.env.PROXY_API_KEY,
+    proxyApiKey,
+    proxyApiKeys,
     requestTimeoutMs: envNumber("REQUEST_TIMEOUT_MS", 120_000),
     proxyLoggingEnabledDefault: envBoolean("PROXY_LOGGING_ENABLED", false),
     proxyLogFilePath: expandHome(

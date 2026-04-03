@@ -40,34 +40,50 @@ Default server:
 
 - base URL: `http://127.0.0.1:8787/v1`
 - preset alias models:
-  - `codex-gpt-5-4-low-fast`
+  - `codexproxy-gpt-5.4-low-fast`
     - upstream model: `gpt-5.4`
     - enforced defaults: `service_tier=priority`, `reasoning.effort=low`, `reasoning.summary=none`
     - advertised context window: `260000`
-  - `codex-gpt-5-4-medium-fast`
+  - `codexproxy-gpt-5.4-medium-fast`
     - upstream model: `gpt-5.4`
     - enforced defaults: `service_tier=priority`, `reasoning.effort=medium`, `reasoning.summary=none`
     - advertised context window: `260000`
-  - `codex-gpt-5-4-high-fast`
+  - `codexproxy-gpt-5.4-high-fast`
     - upstream model: `gpt-5.4`
     - enforced defaults: `service_tier=priority`, `reasoning.effort=high`, `reasoning.summary=none`
     - advertised context window: `260000`
-  - `codex-gpt-5-4-xhigh-fast`
+  - `codexproxy-gpt-5.4-xhigh-fast`
     - upstream model: `gpt-5.4`
     - enforced defaults: `service_tier=priority`, `reasoning.effort=xhigh`, `reasoning.summary=none`
     - advertised context window: `260000`
-- compatibility alias model: `codex-gpt-5-4-fast-xhigh`
+- compatibility alias models kept hidden from `/v1/models`:
+  - `codex-gpt-5-4-fast-xhigh`
+  - `codex-gpt-5-4`
   - upstream model: `gpt-5.4`
   - enforced defaults: `service_tier=priority`, `reasoning.effort=xhigh`, `reasoning.summary=none`
   - advertised context window: `260000`
+- passthrough aliases exposed for other upstream list models:
+  - `codexproxy-gpt-5.4`
+  - `codexproxy-gpt-5.4-mini`
+  - `codexproxy-gpt-5.3-codex`
+  - `codexproxy-gpt-5.2-codex`
+  - `codexproxy-gpt-5.2`
+  - `codexproxy-gpt-5.1-codex-max`
+  - `codexproxy-gpt-5.1-codex-mini`
 - Cursor compatibility:
   - if the request looks like Cursor and the model name is plain `gpt-5.4`, the proxy force-applies `service_tier=priority` and `reasoning={effort:xhigh,summary:none}`
   - this avoids Cursor rejecting the custom alias before the request is sent
+- proxy auth:
+  - if `PROXY_API_KEY` or `PROXY_API_KEYS` is set, all public endpoints require auth
+  - accepted headers:
+    - `Authorization: Bearer <key>`
+    - `X-API-Key: <key>`
 
 Example:
 
 ```bash
 curl http://127.0.0.1:8787/v1/chat/completions \
+  -H "Authorization: Bearer $PROXY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-5.4",
@@ -79,9 +95,10 @@ Alias model example:
 
 ```bash
 curl http://127.0.0.1:8787/v1/chat/completions \
+  -H "Authorization: Bearer $PROXY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "codex-gpt-5-4-medium-fast",
+    "model": "codexproxy-gpt-5.4-medium-fast",
     "messages": [{"role": "user", "content": "Reply with exactly ALIAS_OK"}]
   }'
 ```
@@ -116,12 +133,15 @@ Logging detail and retention:
 - `CODEX_REFRESH_URL`: default `https://auth.openai.com/oauth/token`
 - `CODEX_CLIENT_VERSION`: optional override for upstream `/models`
 - `CODEX_DEFAULT_MODEL`: default `gpt-5.4`
-- `CODEX_ALIAS_GPT54_LOW_FAST`: default `codex-gpt-5-4-low-fast`
-- `CODEX_ALIAS_GPT54_MEDIUM_FAST`: default `codex-gpt-5-4-medium-fast`
-- `CODEX_ALIAS_GPT54_HIGH_FAST`: default `codex-gpt-5-4-high-fast`
-- `CODEX_ALIAS_GPT54_XHIGH_FAST`: default `codex-gpt-5-4-xhigh-fast`
+- `CODEX_MODEL_ALIAS_PREFIX`: default `codexproxy-`
+- `CODEX_EXPOSE_RAW_UPSTREAM_MODELS`: default `false`
+- `CODEX_ALIAS_GPT54_LOW_FAST`: default `codexproxy-gpt-5.4-low-fast`
+- `CODEX_ALIAS_GPT54_MEDIUM_FAST`: default `codexproxy-gpt-5.4-medium-fast`
+- `CODEX_ALIAS_GPT54_HIGH_FAST`: default `codexproxy-gpt-5.4-high-fast`
+- `CODEX_ALIAS_GPT54_XHIGH_FAST`: default `codexproxy-gpt-5.4-xhigh-fast`
 - `CODEX_ALIAS_GPT54_FAST_XHIGH`: default `codex-gpt-5-4-fast-xhigh` (legacy compatibility alias)
-- `PROXY_API_KEY`: optional API key required by this proxy itself
+- `PROXY_API_KEY`: primary API key required by this proxy
+- `PROXY_API_KEYS`: optional comma-separated extra API keys accepted by this proxy
 - `REQUEST_TIMEOUT_MS`: default `120000`
 - `PROXY_LOGGING_ENABLED`: default `false`
 - `PROXY_LOG_FILE_PATH`: default `./var/request-debug.jsonl`

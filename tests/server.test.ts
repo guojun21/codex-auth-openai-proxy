@@ -132,6 +132,7 @@ function makeConfig(
   options?: {
     refreshUrl?: string;
     proxyApiKey?: string;
+    proxyApiKeys?: string[];
     proxyLoggingEnabledDefault?: boolean;
     logReadLimitMax?: number;
     logFileMaxBytes?: number;
@@ -142,10 +143,13 @@ function makeConfig(
       reasoningSummary?: string;
       serviceTier?: string;
       contextWindow?: number;
+      expose?: boolean;
     }>;
   },
 ): AppConfig {
   const rootDir = path.dirname(authJsonPath);
+  const proxyApiKeys = options?.proxyApiKeys
+    ?? (options?.proxyApiKey ? [options.proxyApiKey] : []);
   return {
     host: "127.0.0.1",
     port: 0,
@@ -157,6 +161,7 @@ function makeConfig(
     modelAliasPrefix: "codexproxy-",
     exposeRawUpstreamModels: false,
     proxyApiKey: options?.proxyApiKey,
+    proxyApiKeys,
     requestTimeoutMs: 10_000,
     proxyLoggingEnabledDefault: options?.proxyLoggingEnabledDefault ?? false,
     proxyLogFilePath: path.join(rootDir, "request-debug.jsonl"),
@@ -1470,6 +1475,82 @@ describe("codex-auth-openai-proxy", () => {
         .join("");
 
       expect(reconstructedArguments).toBe(fullArguments);
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("protects routes with API keys and accepts both Bearer and X-API-Key headers", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      if (request.path === "/backend-api/codex/models") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            models: [{ slug: "gpt-5.4", visibility: "list" }],
+          }),
+        );
+        return;
+      }
+
+      res.writeHead(404).end();
+    });
+
+    try {
+      const app = await buildServer(
+        makeConfig(authPath, upstream.baseUrl, {
+          proxyApiKey: "proxy-secret",
+          proxyApiKeys: ["proxy-secret", "spare-secret"],
+        }),
+      );
+
+      const unauthorizedHealth = await app.inject({
+        method: "GET",
+        url: "/health",
+      });
+      expect(unauthorizedHealth.statusCode).toBe(401);
+
+      const unauthorizedModels = await app.inject({
+        method: "GET",
+        url: "/v1/models",
+        headers: {
+          authorization: "Bearer wrong-secret",
+        },
+      });
+      expect(unauthorizedModels.statusCode).toBe(401);
+
+      const bearerHealth = await app.inject({
+        method: "GET",
+        url: "/health",
+        headers: {
+          authorization: "Bearer proxy-secret",
+        },
+      });
+      expect(bearerHealth.statusCode).toBe(200);
+      expect(bearerHealth.json()).toMatchObject({
+        ok: true,
+        auth_enabled: true,
+        configured_api_key_count: 2,
+      });
+
+      const xApiKeyModels = await app.inject({
+        method: "GET",
+        url: "/v1/models",
+        headers: {
+          "x-api-key": "spare-secret",
+        },
+      });
+      expect(xApiKeyModels.statusCode).toBe(200);
+      expect((xApiKeyModels.json() as { data: Array<{ id: string }> }).data).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "codexproxy-gpt-5.4-low-fast" }),
+          expect.objectContaining({ id: "codexproxy-gpt-5.4" }),
+        ]),
+      );
+
       await app.close();
     } finally {
       await upstream.close();

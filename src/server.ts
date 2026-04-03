@@ -20,17 +20,33 @@ import {
   safeParseSseJson,
 } from "./sse.js";
 
-function ensureAuthorized(requestHeaders: Record<string, unknown>, proxyApiKey?: string): void {
-  if (!proxyApiKey) {
+function extractRequestApiKey(requestHeaders: Record<string, unknown>): string | null {
+  const xApiKey = requestHeaders["x-api-key"];
+  if (typeof xApiKey === "string" && xApiKey.trim().length > 0) {
+    return xApiKey.trim();
+  }
+
+  const authHeader = requestHeaders.authorization;
+  if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+    return authHeader.slice("Bearer ".length);
+  }
+
+  return null;
+}
+
+function ensureAuthorized(
+  requestHeaders: Record<string, unknown>,
+  proxyApiKeys: string[],
+): void {
+  if (proxyApiKeys.length === 0) {
     return;
   }
-  const authHeader = requestHeaders.authorization;
-  const token =
-    typeof authHeader === "string" && authHeader.startsWith("Bearer ")
-      ? authHeader.slice("Bearer ".length)
-      : null;
-  if (token !== proxyApiKey) {
-    throw Object.assign(new Error("Unauthorized"), { statusCode: 401 });
+
+  const token = extractRequestApiKey(requestHeaders);
+  if (!token || !proxyApiKeys.includes(token)) {
+    throw Object.assign(new Error("Unauthorized: missing or invalid API key"), {
+      statusCode: 401,
+    });
   }
 }
 
@@ -231,31 +247,42 @@ export async function buildServer(config: AppConfig) {
       }
     | undefined;
 
-  app.get("/health", async () => {
-    const auth = await resolveUpstreamAuth(config);
-    return {
-      ok: true,
-      upstream_base_url: config.upstreamBaseUrl,
-      auth_json_path: config.authJsonPath,
-      account_id: auth.accountId,
-      client_version: config.clientVersion,
-      logging_enabled: proxyLogger.isEnabled(),
-      model_aliases: config.modelAliases
-        .filter((alias) => alias.expose !== false)
-        .map((alias) => ({
-          alias: alias.alias,
-          upstream_model: alias.upstreamModel,
-          reasoning_effort: alias.reasoningEffort ?? null,
-          reasoning_summary: alias.reasoningSummary ?? null,
-          service_tier: alias.serviceTier ?? null,
-          context_window: alias.contextWindow ?? null,
-        })),
-    };
+  app.get("/health", async (request, reply) => {
+    try {
+      ensureAuthorized(
+        request.headers as Record<string, unknown>,
+        config.proxyApiKeys,
+      );
+      const auth = await resolveUpstreamAuth(config);
+      return {
+        ok: true,
+        upstream_base_url: config.upstreamBaseUrl,
+        auth_json_path: config.authJsonPath,
+        account_id: auth.accountId,
+        client_version: config.clientVersion,
+        auth_enabled: config.proxyApiKeys.length > 0,
+        accepted_auth_headers: ["Authorization: Bearer <key>", "X-API-Key: <key>"],
+        configured_api_key_count: config.proxyApiKeys.length,
+        logging_enabled: proxyLogger.isEnabled(),
+        model_aliases: config.modelAliases
+          .filter((alias) => alias.expose !== false)
+          .map((alias) => ({
+            alias: alias.alias,
+            upstream_model: alias.upstreamModel,
+            reasoning_effort: alias.reasoningEffort ?? null,
+            reasoning_summary: alias.reasoningSummary ?? null,
+            service_tier: alias.serviceTier ?? null,
+            context_window: alias.contextWindow ?? null,
+          })),
+      };
+    } catch (error) {
+      return reply.code(statusCodeFromError(error)).send(proxyErrorBody(error));
+    }
   });
 
   app.get("/admin/logging", async (request, reply) => {
     try {
-      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKey);
+      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKeys);
       return proxyLogger.status();
     } catch (error) {
       return reply.code(statusCodeFromError(error)).send(proxyErrorBody(error));
@@ -266,7 +293,7 @@ export async function buildServer(config: AppConfig) {
     const startedAt = Date.now();
     const requestBody = (request.body ?? {}) as JsonMap;
     try {
-      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKey);
+      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKeys);
       if (typeof requestBody.enabled !== "boolean") {
         return reply.code(400).send({
           error: {
@@ -302,7 +329,7 @@ export async function buildServer(config: AppConfig) {
 
   app.get("/admin/logs", async (request, reply) => {
     try {
-      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKey);
+      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKeys);
       const query = (request.query ?? {}) as Record<string, unknown>;
       const rawLimit = query.limit;
       const limit =
@@ -330,7 +357,7 @@ export async function buildServer(config: AppConfig) {
     };
 
     try {
-      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKey);
+      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKeys);
       const now = Date.now();
       if (cachedModels && cachedModels.expiresAt > now) {
         await proxyLogger.record({
@@ -452,7 +479,7 @@ export async function buildServer(config: AppConfig) {
     };
 
     try {
-      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKey);
+      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKeys);
       const upstreamRequest = buildUpstreamResponsesRequest(requestBody, config);
       const streamRequested = Boolean(requestBody.stream);
       const upstream = await postUpstreamResponses(config, upstreamRequest.upstreamBody);
@@ -625,7 +652,7 @@ export async function buildServer(config: AppConfig) {
     };
 
     try {
-      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKey);
+      ensureAuthorized(request.headers as Record<string, unknown>, config.proxyApiKeys);
       const streamRequested = Boolean(requestBody.stream);
       const upstreamRequest = buildUpstreamChatRequest(requestBody, config);
       const upstream = await postUpstreamResponses(config, upstreamRequest.upstreamBody);
