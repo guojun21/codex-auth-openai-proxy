@@ -319,7 +319,12 @@ function buildChatInputFromExplicitItems(items: unknown[]): unknown[] {
     }
 
     const type = ensureText(record.type);
-    return type === "function_call" || type === "function_call_output";
+    return (
+      type === "function_call" ||
+      type === "function_call_output" ||
+      type === "custom_tool_call" ||
+      type === "custom_tool_call_output"
+    );
   });
 }
 

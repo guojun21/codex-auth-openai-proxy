@@ -964,6 +964,135 @@ describe("codex-auth-openai-proxy", () => {
     }
   });
 
+  it("preserves custom_tool_call and custom_tool_call_output items on chat completions follow-up requests", async () => {
+    const tempDir = await makeTempDir();
+    cleanupPaths.push(tempDir);
+    const authPath = await writeAuthFile(tempDir);
+    const upstream = await startMockServer((request, res) => {
+      const body = JSON.parse(request.bodyText) as Record<string, unknown>;
+      expect(String(body.instructions)).toContain("[system]");
+      expect(body.input).toEqual([
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "patch this" }],
+        },
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "I will edit the file." }],
+        },
+        {
+          type: "custom_tool_call",
+          call_id: "call_patch_1",
+          name: "ApplyPatch",
+          input: "*** Begin Patch\n*** Update File: /tmp/demo.txt\n@@\n-old\n+new\n*** End Patch\n",
+        },
+        {
+          type: "custom_tool_call_output",
+          call_id: "call_patch_1",
+          output: [
+            {
+              type: "input_text",
+              text: "Failed to find context",
+            },
+          ],
+        },
+      ]);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          {
+            type: "response.output_text.done",
+            text: "CUSTOM_TOOL_FOLLOW_UP_OK",
+          },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_follow_up_custom_tool_1",
+              created_at: 700,
+              model: "gpt-5.4",
+              usage: {
+                input_tokens: 12,
+                output_tokens: 3,
+                total_tokens: 15,
+              },
+              output: [
+                {
+                  id: "msg_follow_up_custom_tool_1",
+                  type: "message",
+                  role: "assistant",
+                  status: "completed",
+                  content: [
+                    { type: "output_text", text: "CUSTOM_TOOL_FOLLOW_UP_OK" },
+                  ],
+                },
+              ],
+            },
+          },
+        ),
+      );
+    });
+
+    try {
+      const app = await buildServer(makeConfig(authPath, upstream.baseUrl));
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        payload: {
+          model: "gpt-5.4",
+          input: [
+            { role: "system", content: "be terse" },
+            { role: "user", content: "patch this" },
+            { role: "assistant", content: "I will edit the file." },
+            {
+              type: "custom_tool_call",
+              call_id: "call_patch_1",
+              name: "ApplyPatch",
+              input:
+                "*** Begin Patch\n*** Update File: /tmp/demo.txt\n@@\n-old\n+new\n*** End Patch\n",
+            },
+            {
+              type: "custom_tool_call_output",
+              call_id: "call_patch_1",
+              output: [
+                {
+                  type: "input_text",
+                  text: "Failed to find context",
+                },
+              ],
+            },
+          ],
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        id: "resp_follow_up_custom_tool_1",
+        object: "chat.completion",
+        created: 700,
+        model: "gpt-5.4",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "CUSTOM_TOOL_FOLLOW_UP_OK",
+            },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 12,
+          completion_tokens: 3,
+          total_tokens: 15,
+        },
+      });
+      await app.close();
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it("accepts shorthand reasoning and verbosity fields for /v1/responses", async () => {
     const tempDir = await makeTempDir();
     cleanupPaths.push(tempDir);
